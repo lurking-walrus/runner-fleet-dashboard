@@ -7,21 +7,49 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   enable-auto-merge:
-    timeout-minutes: 10
+    timeout-minutes: 20
     # Inlined rather than calling Lurking-Walrus/.github-private's reusable
     # workflow: this repo is public and that one is private, so the call would
     # not reliably resolve. Kept behaviourally identical to it.
     #
     # The head-repo check is load-bearing and must not be relaxed: it restricts
     # auto-merge to same-repo branches, so a fork PR from a stranger can never
-    # queue itself for merge. `--auto` still waits for required checks.
+    # queue itself for merge.
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest # allow-bare-runner: public repository: a fork PR must never reach the self-hosted fleet, and hosted minutes are free here
     steps:
-      - name: Enable auto-merge
+      # Merging here (rather than `gh pr merge --auto`, which defers the actual
+      # merge to GitHub's background auto-merge service) matters: a merge
+      # performed with the default GITHUB_TOKEN never fires downstream `push`
+      # or `pull_request: closed` triggers, so deploy.yml's push-to-main
+      # trigger silently never ran for any squash-merged PR (see #7's fix
+      # sitting merged-but-undeployed for a day). workflow_dispatch is the one
+      # event GITHUB_TOKEN is still allowed to trigger, so merging inline and
+      # dispatching deploy.yml ourselves closes that gap without needing a PAT.
+      - name: Wait for required checks
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+        run: gh pr checks "${{ github.event.pull_request.html_url }}" --watch --fail-fast
+
+      - name: Merge
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh pr merge --squash "${{ github.event.pull_request.html_url }}"; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Direct merge was blocked (e.g. pending review/branch protection). Falling back to background auto-merge -- deploy.yml will need a manual (workflow_dispatch) trigger once this actually merges, since that merge will be GITHUB_TOKEN-attributed and won't self-trigger deploy." >&2
+            gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy the merge
+        if: steps.merge.outputs.merged == 'true' && github.event.pull_request.base.ref == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --ref main
