@@ -30,21 +30,34 @@ jobs:
       # sitting merged-but-undeployed for a day). workflow_dispatch is the one
       # event GITHUB_TOKEN is still allowed to trigger, so merging inline and
       # dispatching deploy.yml ourselves closes that gap without needing a PAT.
-      - name: Wait for required checks
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh pr checks "${{ github.event.pull_request.html_url }}" --watch --fail-fast
-
+      #
+      # Deliberately not `gh pr checks --watch`: that waits for every check run
+      # on the commit, including this very job's own "enable-auto-merge" check,
+      # which can never be "complete" while it's still running -- a guaranteed
+      # self-deadlock. Polling `gh pr merge` instead only asks "mergeable yet?"
+      # and retries while the answer is "not yet", which carries no such
+      # self-reference.
       - name: Merge
         id: merge
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh pr merge --squash "${{ github.event.pull_request.html_url }}"; then
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          merged=false
+          for _ in $(seq 1 60); do
+            if gh pr merge --squash "$PR_URL" 2>err.log; then
+              merged=true
+              break
+            fi
+            cat err.log >&2
+            grep -qiE "not mergeable|required status check|expected|pending|in progress" err.log || break
+            sleep 10
+          done
+          if [ "$merged" = true ]; then
             echo "merged=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Direct merge was blocked (e.g. pending review/branch protection). Falling back to background auto-merge -- deploy.yml will need a manual (workflow_dispatch) trigger once this actually merges, since that merge will be GITHUB_TOKEN-attributed and won't self-trigger deploy." >&2
-            gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+            echo "::warning::Direct merge did not go through after waiting on checks (see log for the last error). Falling back to background auto-merge -- deploy.yml will need a manual (workflow_dispatch) trigger once this actually merges, since that merge will be GITHUB_TOKEN-attributed and won't self-trigger deploy." >&2
+            gh pr merge --auto --squash "$PR_URL"
             echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
 
