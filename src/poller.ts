@@ -2,12 +2,13 @@ import {
   currentJobRunnerNames,
   deleteCurrentJob,
   logEvent,
+  recordJobHistory,
   pruneVanishedRunners,
   recordPoll,
   upsertCurrentJob,
   upsertRunner,
 } from "./db";
-import { fetchJobConclusion, listOrgRepos, listRunnersForScope, parseScopes, resolveJobsInRepo } from "./github";
+import { derivePool, fetchJobConclusion, listOrgRepos, listRunnersForScope, parseScopes, resolveJobsInRepo } from "./github";
 import type { Env, PollScope } from "./types";
 
 export async function runPoll(env: Env) {
@@ -100,6 +101,15 @@ export async function runPoll(env: Env) {
       const [prevOwner = "", prevRepo = ""] = prevJob.repo.split("/");
       const result = await fetchJobConclusion(prevOwner, prevRepo, prevJob.jobId, env.GH_PAT);
       if (result) {
+        if (result.conclusion) {
+          await recordJobHistory(env.DB, {
+            ...prevJob,
+            runnerName,
+            pool: derivePool(runnerName),
+            finishedAt: result.completedAt ?? now,
+            conclusion: result.conclusion,
+          });
+        }
         await logEvent(
           env.DB,
           {

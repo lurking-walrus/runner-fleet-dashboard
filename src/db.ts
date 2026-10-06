@@ -71,13 +71,54 @@ export async function upsertCurrentJob(db: D1Database, job: ResolvedJob, now: st
     .run();
 }
 
-export async function currentJobRunnerNames(db: D1Database): Promise<Map<string, { repo: string; jobId: number }>> {
-  const { results } = await db.prepare(`SELECT runner_name, repo, job_id FROM current_jobs`).all<{
-    runner_name: string;
-    repo: string;
-    job_id: number;
-  }>();
-  return new Map(results.map((r) => [r.runner_name, { repo: r.repo, jobId: r.job_id }]));
+export interface TrackedJob {
+  repo: string;
+  jobId: number;
+  runUrl: string;
+  jobName: string;
+  workflowName: string;
+  startedAt: string;
+}
+
+export async function currentJobRunnerNames(db: D1Database): Promise<Map<string, TrackedJob>> {
+  const { results } = await db
+    .prepare(`SELECT runner_name, repo, job_id, run_url, job_name, workflow_name, job_started_at FROM current_jobs`)
+    .all<{
+      runner_name: string;
+      repo: string;
+      job_id: number;
+      run_url: string;
+      job_name: string;
+      workflow_name: string;
+      job_started_at: string;
+    }>();
+  return new Map(
+    results.map((r) => [
+      r.runner_name,
+      {
+        repo: r.repo,
+        jobId: r.job_id,
+        runUrl: r.run_url,
+        jobName: r.job_name,
+        workflowName: r.workflow_name,
+        startedAt: r.job_started_at,
+      },
+    ]),
+  );
+}
+
+export async function recordJobHistory(
+  db: D1Database,
+  j: TrackedJob & { runnerName: string; pool: string; finishedAt: string; conclusion: string | null },
+) {
+  const durationS = Math.max(0, Math.round((Date.parse(j.finishedAt) - Date.parse(j.startedAt)) / 1000));
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO job_history (job_id, pool, runner_name, repo, workflow_name, job_name, run_url, started_at, finished_at, duration_s, conclusion)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(j.jobId, j.pool, j.runnerName, j.repo, j.workflowName, j.jobName, j.runUrl, j.startedAt, j.finishedAt, durationS, j.conclusion)
+    .run();
 }
 
 export async function deleteCurrentJob(db: D1Database, runnerName: string) {
@@ -144,4 +185,20 @@ export async function upsertTelemetry(
       now,
     )
     .run();
+
+  // Thin time series for the metrics view: at most one sample per host per ~5 minutes.
+  const last = await db
+    .prepare(`SELECT ts FROM telemetry_samples WHERE host = ? ORDER BY ts DESC LIMIT 1`)
+    .bind(t.host)
+    .first<{ ts: string }>();
+  if (!last || Date.parse(now) - Date.parse(last.ts) >= 5 * 60_000) {
+    await db
+      .prepare(`INSERT INTO telemetry_samples (host, ts, cpu_pct, mem_pct, load_avg_1m) VALUES (?, ?, ?, ?, ?)`)
+      .bind(t.host, now, t.cpuPct, t.memTotalMb ? (t.memUsedMb / t.memTotalMb) * 100 : 0, t.loadAvg1m)
+      .run();
+    await db
+      .prepare(`DELETE FROM telemetry_samples WHERE host = ? AND ts < ?`)
+      .bind(t.host, new Date(Date.parse(now) - 7 * 86_400_000).toISOString())
+      .run();
+  }
 }

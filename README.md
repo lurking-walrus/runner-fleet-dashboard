@@ -91,4 +91,5 @@ curl -u dev:<DASHBOARD_PASSWORD> -X POST http://localhost:8787/api/poll-now   # 
 - Telemetry is per physical host, not per runner process — if two runners on
   the same box are both busy, they share the same CPU/RAM/disk numbers,
   because they're literally sharing the same hardware.
-- No historical charts yet, just a live snapshot and a 100-event recent feed.
+- No charts yet. Each pool shows 24h/7d usage (jobs run, busy time, failures, last job, avg/peak CPU), built from `job_history` (written when a job finishes) and `telemetry_samples` (one per host per ~5 min, kept 7 days). Apply migration 0003 before deploying.
+- Ephemeral/JIT runners (`<prefix>-<slot>-<unix-ts>`) group by stripping the timestamp, then the slot, so the agent's `HOST_ID` is the bare prefix (e.g. `mac-linux-arm64`).
