@@ -30,9 +30,13 @@ export function parseScopes(raw: string): PollScope[] {
     });
 }
 
-/** Runner name minus a trailing "-N" index — groups a fleet of runners back to one physical host. */
+/**
+ * Runner name minus a trailing "-N" slot index — groups a fleet of runners back to one physical host.
+ * Ephemeral (JIT) runners get a unix-timestamp suffix per registration, e.g.
+ * "mac-linux-arm64-1-1791294671"; strip that first so they group as "mac-linux-arm64".
+ */
 export function derivePool(name: string): string {
-  return name.replace(/-\d+$/, "");
+  return name.replace(/-\d{9,}$/, "").replace(/-\d+$/, "");
 }
 
 export async function listRunnersForScope(
@@ -109,11 +113,11 @@ export async function fetchJobConclusion(
   repo: string,
   jobId: number,
   token: string,
-): Promise<{ conclusion: string | null; htmlUrl: string } | null> {
+): Promise<{ conclusion: string | null; htmlUrl: string; completedAt: string | null } | null> {
   try {
     const res = await gh(`/repos/${owner}/${repo}/actions/jobs/${jobId}`, token);
-    const body = (await res.json()) as { conclusion: string | null; html_url: string };
-    return { conclusion: body.conclusion, htmlUrl: body.html_url };
+    const body = (await res.json()) as { conclusion: string | null; html_url: string; completed_at: string | null };
+    return { conclusion: body.conclusion, htmlUrl: body.html_url, completedAt: body.completed_at };
   } catch {
     return null;
   }

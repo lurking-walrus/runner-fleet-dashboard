@@ -119,7 +119,18 @@ function renderRunner(r) {
   </div>\`;
 }
 
-function renderPool(poolName, runners) {
+function fmtDur(s) {
+  if (!s) return "0m";
+  return s >= 3600 ? (s / 3600).toFixed(1) + "h" : Math.round(s / 60) + "m";
+}
+function renderMetrics(m) {
+  if (!m) return '<div class="pool-location">usage: no finished jobs recorded yet</div>';
+  const failed = m.failed_7d ? \` (\${m.failed_7d} failed)\` : "";
+  const cpu = m.cpu_avg_24h != null ? \` · CPU avg \${Math.round(m.cpu_avg_24h)}% / peak \${Math.round(m.cpu_peak_24h)}% (24h)\` : "";
+  return \`<div class="pool-location">usage: \${m.jobs_24h || 0} jobs / \${fmtDur(m.busy_s_24h)} busy (24h) · \${m.jobs_7d || 0} jobs / \${fmtDur(m.busy_s_7d)} busy (7d)\${failed} · last job \${fmtAge(m.last_job_at)}\${cpu}</div>\`;
+}
+
+function renderPool(poolName, runners, metrics) {
   const telemetry = runners.find((r) => r.telemetry)?.telemetry;
   const location = telemetry?.location || POOL_LOCATIONS[poolName] || poolName;
   const meters = telemetry
@@ -136,6 +147,7 @@ function renderPool(poolName, runners) {
       <div><div class="pool-name">\${location}</div></div>
       \${meters}
     </div>
+    \${renderMetrics(metrics)}
     \${runners.map(renderRunner).join("")}
   </div>\`;
 }
@@ -162,7 +174,7 @@ async function refresh() {
     (pools[r.pool] ??= []).push(r);
   }
   const poolsEl = document.getElementById("pools");
-  poolsEl.innerHTML = Object.keys(pools).sort().map((p) => renderPool(p, pools[p])).join("") || '<div class="empty">no runners seen yet</div>';
+  poolsEl.innerHTML = Object.keys(pools).sort().map((p) => renderPool(p, pools[p], data.metrics && data.metrics[p])).join("") || '<div class="empty">no runners seen yet</div>';
 
   const eventsEl = document.getElementById("events");
   eventsEl.innerHTML = data.events.length ? data.events.map(renderEvent).join("") : '<div class="empty">nothing to report</div>';
