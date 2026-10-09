@@ -1,6 +1,12 @@
 export interface Secrets {
-  // Fine-grained PAT: org self-hosted runners (read), repo actions (read), metadata (read).
-  GH_PAT: string;
+  // GitHub App credentials (preferred; installation tokens are minted per poll, nothing to rotate).
+  // GH_APP_PRIVATE_KEY is the .pem GitHub generates, PKCS#1 or PKCS#8. GH_APP_INSTALLATION_ID is
+  // optional: when unset it is looked up from the first POLL_SCOPES entry.
+  GH_APP_ID?: string;
+  GH_APP_PRIVATE_KEY?: string;
+  GH_APP_INSTALLATION_ID?: string;
+  // Fallback fine-grained PAT, used only when no App is configured or minting an App token fails.
+  GH_PAT?: string;
   // Gates the dashboard UI and API (HTTP Basic Auth).
   DASHBOARD_USER: string;
   DASHBOARD_PASSWORD: string;

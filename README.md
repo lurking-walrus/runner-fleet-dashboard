@@ -37,16 +37,30 @@ npx wrangler d1 migrations apply runner-fleet-dashboard --remote
 Set secrets (run these yourself — never paste tokens through an agent):
 
 ```bash
-wrangler secret put GH_PAT              # fine-grained PAT, see below
-wrangler secret put DASHBOARD_USER
-wrangler secret put DASHBOARD_PASSWORD
-wrangler secret put TELEMETRY_TOKEN     # any long random string; agents send this as a bearer token
+# GitHub App (preferred — no expiring tokens to rotate); key is the .pem GitHub downloads
+npx wrangler secret put GH_APP_ID
+npx wrangler secret put GH_APP_PRIVATE_KEY < path/to/app.private-key.pem
+npx wrangler secret put GH_APP_INSTALLATION_ID   # optional; auto-discovered from POLL_SCOPES if unset
+
+npx wrangler secret put DASHBOARD_USER
+npx wrangler secret put DASHBOARD_PASSWORD
+npx wrangler secret put TELEMETRY_TOKEN     # any long random string; agents send this as a bearer token
+
+# Optional fallback if no App is configured, or minting an App token fails:
+npx wrangler secret put GH_PAT              # fine-grained PAT, same permissions as below
 ```
 
-**`GH_PAT` scopes needed** (fine-grained PAT, `kornsour` account):
-- Organization permissions on `Lurking-Walrus`: **Self-hosted runners: Read-only**, **Administration: Read-only** (to list org repos)
-- Repository permissions, for every repo the fleet might run jobs on (or "All repositories"): **Actions: Read-only**, **Metadata: Read-only**
-- If you add personal-repo scopes to `POLL_SCOPES` below: same repo permissions on those `kornsour/*` repos, plus **Self-hosted runners: Read-only** (repo-level, since personal accounts have no org-wide runner API)
+**GitHub App permissions** (create it under the `Lurking-Walrus` org, no webhook, install on the org):
+- Organization permissions: **Self-hosted runners: Read-only**, **Administration: Read-only** (to list org repos)
+- Repository permissions: **Actions: Read-only**, **Metadata: Read-only** (Metadata is added automatically)
+- Install on all repositories (or every repo the fleet might run jobs on). To poll personal `kornsour/*`
+  repos via `repo:` scopes, set the App's visibility to "Any account", install it there too, and add
+  **Administration: Read-only** at repo level for the runner list.
+
+The `GH_PAT` fallback needs the same permissions, as a fine-grained PAT:
+- Organization permissions on `Lurking-Walrus`: **Self-hosted runners: Read-only**, **Administration: Read-only**
+- Repository permissions on every repo the fleet might run jobs on: **Actions: Read-only**, **Metadata: Read-only**
+- For personal-repo scopes in `POLL_SCOPES`: the same repo permissions plus **Self-hosted runners: Read-only** at repo level
 
 ```bash
 npx wrangler deploy
@@ -76,7 +90,7 @@ whatever it runs — a Linux box, WSL on Windows, or a Mac hosting containers.
 ```bash
 npm install
 npx wrangler d1 migrations apply runner-fleet-dashboard --local
-cp .dev.vars.example .dev.vars   # fill in a local GH_PAT (e.g. `gh auth token`) and dev secrets
+cp .dev.vars.example .dev.vars   # fill in a local GH_PAT (e.g. `gh auth token`) or GitHub App values and dev secrets
 npx wrangler dev --test-scheduled
 curl -u dev:<DASHBOARD_PASSWORD> -X POST http://localhost:8787/api/poll-now   # trigger a poll on demand
 ```
