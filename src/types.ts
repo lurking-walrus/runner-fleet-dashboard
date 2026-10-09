@@ -10,6 +10,9 @@ export interface Secrets {
   // Gates the dashboard UI and API (HTTP Basic Auth).
   DASHBOARD_USER: string;
   DASHBOARD_PASSWORD: string;
+  // Optional: a Slack/Discord-compatible incoming webhook URL. When set, poller failure and
+  // recovery alerts are POSTed there as {text, content} in addition to being logged as events.
+  ALERT_WEBHOOK_URL?: string;
   // Bearer token the host telemetry agents authenticate with.
   TELEMETRY_TOKEN: string;
 }

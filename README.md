@@ -45,6 +45,7 @@ npx wrangler secret put GH_APP_INSTALLATION_ID   # optional; auto-discovered fro
 npx wrangler secret put DASHBOARD_USER
 npx wrangler secret put DASHBOARD_PASSWORD
 npx wrangler secret put TELEMETRY_TOKEN     # any long random string; agents send this as a bearer token
+npx wrangler secret put ALERT_WEBHOOK_URL   # optional Slack/Discord webhook for poller failure alerts
 
 # Optional fallback if no App is configured, or minting an App token fails:
 npx wrangler secret put GH_PAT              # fine-grained PAT, same permissions as below
