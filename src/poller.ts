@@ -9,6 +9,7 @@ import {
   upsertRunner,
 } from "./db";
 import { derivePool, fetchJobConclusion, listOrgRepos, listRunnersForScope, parseScopes, resolveJobsInRepo } from "./github";
+import { alertIfPollerFailing, alertIfPollerRecovered } from "./alerts";
 import { resolveGithubToken } from "./github-auth";
 import type { Env, PollScope } from "./types";
 
@@ -128,9 +129,11 @@ export async function runPoll(env: Env) {
     }
 
     await detectIssues(env, now);
+    await alertIfPollerRecovered(env, now);
     await recordPoll(env.DB, true, null, now);
   } catch (err) {
     await recordPoll(env.DB, false, String(err), now);
+    await alertIfPollerFailing(env, String(err), now);
     throw err;
   }
 }

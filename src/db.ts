@@ -138,9 +138,23 @@ export async function logEvent(
 
 export async function recordPoll(db: D1Database, ok: boolean, error: string | null, now: string) {
   await db
-    .prepare(`UPDATE poll_state SET last_run_at = ?, last_ok = ?, last_error = ? WHERE id = 1`)
+    .prepare(
+      `UPDATE poll_state SET last_run_at = ?, last_ok = ?, last_error = ?,
+         consecutive_failures = CASE WHEN ?2 = 1 THEN 0 ELSE consecutive_failures + 1 END
+       WHERE id = 1`,
+    )
     .bind(now, ok ? 1 : 0, error)
     .run();
+}
+
+export async function getPollFailureState(db: D1Database) {
+  return db
+    .prepare(`SELECT consecutive_failures, last_alert_at FROM poll_state WHERE id = 1`)
+    .first<{ consecutive_failures: number; last_alert_at: string | null }>();
+}
+
+export async function setPollAlertedAt(db: D1Database, at: string) {
+  await db.prepare(`UPDATE poll_state SET last_alert_at = ? WHERE id = 1`).bind(at).run();
 }
 
 export async function upsertTelemetry(

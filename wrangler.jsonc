@@ -29,6 +29,9 @@
     "TELEMETRY_STALE_MINUTES": "10",
     // How many minutes a runner can sit offline before it's flagged as stuck
     // (as opposed to a one-off blip). Re-flagged hourly for as long as it stays offline.
+    // Consecutive failed polls (the cron runs every 2 min) before a poller_failing alert is raised.
+    // Re-raised every 6 hours while it stays broken.
+    "POLLER_FAILURE_ALERT_RUNS": "3",
     "OFFLINE_STUCK_MINUTES": "15"
   }
 }
