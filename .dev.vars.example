@@ -1,3 +1,7 @@
+# Either a GitHub App (preferred)...
+# GH_APP_ID=123456
+# GH_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+# ...or a PAT fallback:
 GH_PAT=paste-a-token-with-actions-read-and-runners-read-scope
 DASHBOARD_USER=dev
 DASHBOARD_PASSWORD=pick-a-local-dev-password

@@ -9,16 +9,18 @@ import {
   upsertRunner,
 } from "./db";
 import { derivePool, fetchJobConclusion, listOrgRepos, listRunnersForScope, parseScopes, resolveJobsInRepo } from "./github";
+import { resolveGithubToken } from "./github-auth";
 import type { Env, PollScope } from "./types";
 
 export async function runPoll(env: Env) {
   const now = new Date().toISOString();
   try {
     const scopes = parseScopes(env.POLL_SCOPES);
+    const ghToken = await resolveGithubToken(env, scopes);
     const allRunners: { runner: import("./types").GhRunner; scopeLabel: string; scope: PollScope }[] = [];
 
     for (const scope of scopes) {
-      const runners = await listRunnersForScope(scope, env.GH_PAT);
+      const runners = await listRunnersForScope(scope, ghToken);
       for (const r of runners) allRunners.push({ ...r, scope });
     }
 
@@ -80,10 +82,10 @@ export async function runPoll(env: Env) {
       const busyNames = busyByScope.get(key);
       if (!busyNames || busyNames.size === 0) continue;
 
-      const repos = scope.kind === "org" ? await listOrgRepos(scope.owner, env.GH_PAT) : [scope.repo!];
+      const repos = scope.kind === "org" ? await listOrgRepos(scope.owner, ghToken) : [scope.repo!];
       for (const repo of repos) {
         if (busyNames.size === 0) break; // all resolved already
-        const jobs = await resolveJobsInRepo(scope.owner, repo, busyNames, env.GH_PAT);
+        const jobs = await resolveJobsInRepo(scope.owner, repo, busyNames, ghToken);
         for (const job of jobs) {
           resolved.set(job.runnerName, job);
           busyNames.delete(job.runnerName);
@@ -99,7 +101,7 @@ export async function runPoll(env: Env) {
       if (resolved.has(runnerName)) continue;
       // This runner's job left in_progress since the last poll — log its outcome once.
       const [prevOwner = "", prevRepo = ""] = prevJob.repo.split("/");
-      const result = await fetchJobConclusion(prevOwner, prevRepo, prevJob.jobId, env.GH_PAT);
+      const result = await fetchJobConclusion(prevOwner, prevRepo, prevJob.jobId, ghToken);
       if (result) {
         if (result.conclusion) {
           await recordJobHistory(env.DB, {
