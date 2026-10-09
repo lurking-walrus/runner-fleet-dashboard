@@ -1,3 +1,4 @@
+import { logEvent } from "./db";
 import type { Env, PollScope } from "./types";
 
 const API = "https://api.github.com";
@@ -20,6 +21,7 @@ export async function resolveGithubToken(env: Env, scopes: PollScope[]): Promise
     } catch (err) {
       if (!env.GH_PAT) throw err;
       console.warn(`GitHub App token failed, falling back to GH_PAT: ${err}`);
+      await reportAppFallback(env, String(err));
     }
   }
   if (env.GH_PAT) return env.GH_PAT;
@@ -123,4 +125,29 @@ function b64url(bytes: Uint8Array): string {
 
 function b64urlJson(obj: unknown): string {
   return b64url(new TextEncoder().encode(JSON.stringify(obj)));
+}
+
+/**
+ * Surface a silent fallback as a dashboard event (at most hourly). Otherwise a broken App setup
+ * looks identical to a bad PAT: the same GitHub 401, with the real cause only in Worker logs.
+ */
+async function reportAppFallback(env: Env, error: string) {
+  try {
+    const last = await env.DB.prepare(`SELECT ts FROM events WHERE kind = 'github_app_auth_failed' ORDER BY ts DESC LIMIT 1`).first<{
+      ts: string;
+    }>();
+    const now = new Date();
+    if (last && now.getTime() - Date.parse(last.ts) < 60 * 60_000) return;
+    await logEvent(
+      env.DB,
+      {
+        severity: "error",
+        kind: "github_app_auth_failed",
+        message: `GitHub App auth failed, using the GH_PAT fallback instead: ${error.slice(0, 300)}`,
+      },
+      now.toISOString(),
+    );
+  } catch (err) {
+    console.warn(`could not record github_app_auth_failed: ${err}`);
+  }
 }
