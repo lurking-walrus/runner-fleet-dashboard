@@ -1,0 +1,33 @@
+# Dependabot for a PUBLIC repository. This repo's Dependabot "Runner type" is
+# set to "Standard GitHub runner" at the repository level (Settings ->
+# Advanced Security), overriding the org default of the self-hosted fleet's
+# `dependabot` label: public repos never get fleet access, and their hosted
+# minutes are free. The repository-level control only exists once this file
+# does. See Lurking-Walrus/.github-private docs/CI-RUNNER-ROUTING.md.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    groups:
+      all-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
