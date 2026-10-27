@@ -15,8 +15,8 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.6.5",
     "typescript": "^7.0.2",
-    "wrangler": "^4.147.0"
+    "wrangler": "^4.152.0"
   }
 }
