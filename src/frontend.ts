@@ -103,7 +103,14 @@ function meter(label, pct, sub) {
 
 function renderRunner(r) {
   const job = r.current_job;
-  let jobHtml = '<span class="empty">idle</span>';
+  // "busy" is GitHub's own flag. A busy runner whose job the poller could not match (or has not
+  // matched yet) must not read "idle" — that contradiction is exactly what the pill next to it
+  // used to show.
+  let jobHtml = r.busy
+    ? '<span class="empty">running a job (not identified yet)</span>'
+    : r.status === "online"
+      ? '<span class="empty">idle</span>'
+      : '<span class="empty">—</span>';
   if (job) {
     const started = fmtAge(job.job_started_at);
     const prLink = job.pr_url ? \` · <a href="\${job.pr_url}" target="_blank" rel="noopener">PR #\${job.pr_number}</a>\` : "";

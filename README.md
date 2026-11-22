@@ -18,8 +18,14 @@ from each agent's own uncommitted `.env` via `LOCATION`.
 ## How it works
 
 - A cron trigger polls the GitHub API every 2 minutes: runner status per
-  configured scope, then cross-references busy runners against in-progress
-  workflow runs to find the repo/workflow/job/PR each one is doing.
+  configured scope, then cross-references busy runners against active
+  workflow runs to find the repo/workflow/job/PR each one is doing. "Active"
+  means `in_progress` **and** `queued`: GitHub keeps a run `queued` while any of
+  its jobs is still waiting for a runner, even though others are running, so on
+  a saturated fleet most busy runners belong to queued runs. Repos are scanned
+  most recently pushed first, and the scan stops once every busy runner is
+  matched or `POLL_MAX_GITHUB_CALLS` is spent; an unmatched busy runner is shown
+  as "running a job (not identified yet)", never as "idle".
 - Runners are grouped into a "pool" (one physical host) by stripping a
   trailing `-N` from the runner name — `ci-host-a-linux-3` groups
   under `ci-host-a-linux`.
