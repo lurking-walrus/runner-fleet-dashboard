@@ -10,7 +10,14 @@ import {
   upsertCurrentJob,
   upsertRunner,
 } from "./db";
-import { listOrgRepos, listRunnersForScope, listUnsyncedCompletedRuns, parseScopes, resolveJobsInRepo } from "./github";
+import {
+  CallBudget,
+  listOrgRepos,
+  listRunnersForScope,
+  listUnsyncedCompletedRuns,
+  parseScopes,
+  resolveJobsInRepo,
+} from "./github";
 import { alertIfPollerFailing, alertIfPollerRecovered } from "./alerts";
 import { resolveGithubToken } from "./github-auth";
 import type { Env, PollScope } from "./types";
@@ -79,16 +86,27 @@ export async function runPoll(env: Env) {
       busyByScope.get(key)!.add(runner.name);
     }
 
+    // Repos that held a running job at the last poll go first: a job usually outlives one poll.
+    const { results: lastRepos } = await env.DB.prepare(`SELECT DISTINCT repo FROM current_jobs`).all<{
+      repo: string;
+    }>();
+    const budget = new CallBudget(Number(env.POLL_MAX_GITHUB_CALLS) || 40);
     const resolved = new Map<string, import("./types").ResolvedJob>();
     for (const scope of scopes) {
       const key = scope.kind === "org" ? scope.owner : `${scope.owner}/${scope.repo}`;
       const busyNames = busyByScope.get(key);
       if (!busyNames || busyNames.size === 0) continue;
 
-      const repos = scope.kind === "org" ? await listOrgRepos(scope.owner, ghToken) : [scope.repo!];
+      let repos = scope.kind === "org" ? await listOrgRepos(scope.owner, ghToken) : [scope.repo!];
+      const first = lastRepos
+        .map((r) => r.repo)
+        .filter((r) => r.startsWith(`${scope.owner}/`))
+        .map((r) => r.slice(scope.owner.length + 1))
+        .filter((r) => repos.includes(r));
+      repos = [...first, ...repos.filter((r) => !first.includes(r))];
       for (const repo of repos) {
-        if (busyNames.size === 0) break; // all resolved already
-        const jobs = await resolveJobsInRepo(scope.owner, repo, busyNames, ghToken);
+        if (busyNames.size === 0 || budget.remaining <= 0) break; // all resolved, or out of calls
+        const jobs = await resolveJobsInRepo(scope.owner, repo, busyNames, ghToken, budget);
         for (const job of jobs) {
           resolved.set(job.runnerName, job);
           busyNames.delete(job.runnerName);

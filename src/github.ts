@@ -2,6 +2,21 @@ import type { GhJob, GhRun, GhRunner, PollScope, ResolvedJob } from "./types";
 
 const API = "https://api.github.com";
 
+/**
+ * A cap on how many GitHub calls one invocation may still make. Workers limit subrequests per
+ * invocation (50 on the Free plan), and going over throws "Too many subrequests" — which used to
+ * fail the WHOLE poll, so runner status was lost along with the job details. Callers check
+ * `take()` before an optional call and simply stop resolving when it says no.
+ */
+export class CallBudget {
+  constructor(public remaining: number) {}
+  take(): boolean {
+    if (this.remaining <= 0) return false;
+    this.remaining -= 1;
+    return true;
+  }
+}
+
 async function gh(path: string, token: string): Promise<Response> {
   const res = await fetch(`${API}${path}`, {
     headers: {
@@ -53,12 +68,16 @@ export async function listRunnersForScope(
   return body.runners.map((runner) => ({ runner, scopeLabel }));
 }
 
-/** Every repo an org-scoped runner fleet could plausibly be running a job for. */
+/**
+ * Every repo an org-scoped runner fleet could plausibly be running a job for, most recently
+ * pushed first — the repos with live runs are almost always at the front, so a busy-runner scan
+ * that stops as soon as every runner is accounted for rarely reaches the tail.
+ */
 export async function listOrgRepos(org: string, token: string): Promise<string[]> {
   const repos: string[] = [];
   let page = 1;
   for (;;) {
-    const res = await gh(`/orgs/${org}/repos?per_page=100&page=${page}`, token);
+    const res = await gh(`/orgs/${org}/repos?per_page=100&page=${page}&sort=pushed&direction=desc`, token);
     const body = (await res.json()) as { name: string }[];
     repos.push(...body.map((r) => r.name));
     if (body.length < 100) break;
@@ -67,26 +86,50 @@ export async function listOrgRepos(org: string, token: string): Promise<string[]
   return repos;
 }
 
+/** Run statuses that can have a job running on a runner right now. */
+const ACTIVE_RUN_STATUSES = new Set(["in_progress", "queued", "waiting", "pending", "requested"]);
+/** How many of a repo's newest runs the busy-runner scan reads (one call). */
+const RECENT_RUNS = 50;
+
 /**
- * Scans a repo's in-progress workflow runs and returns the job currently
- * occupying each of `busyRunnerNames`. Cheap when the repo has no in-progress
- * runs — one list call and nothing further.
+ * Finds the job currently occupying each of `busyRunnerNames` in one repo.
+ *
+ * Looks at every ACTIVE run, not only `status=in_progress` ones. GitHub keeps a run `queued` while
+ * ANY of its jobs is still waiting for a runner, even though its other jobs are already running —
+ * so on a busy fleet (a CI run fans out to more jobs than there are free runners) many busy runners
+ * belong to `queued` runs. Filtering on `in_progress` left those runners unresolved and the
+ * dashboard drew them as "online · busy" next to "idle" (measured 2026-11-22: 5 of 7 busy runners
+ * were in queued runs). One unfiltered list call per repo (the newest `RECENT_RUNS` runs) covers
+ * both statuses for the price of one; a job older than that window shows as unidentified.
+ *
+ * Every GitHub call is taken from `budget`; when it runs out the scan stops and returns what it
+ * found, and the caller shows the rest as busy with an unidentified job rather than failing.
  */
 export async function resolveJobsInRepo(
   owner: string,
   repo: string,
   busyRunnerNames: Set<string>,
   token: string,
+  budget: CallBudget,
 ): Promise<ResolvedJob[]> {
-  const runsRes = await gh(`/repos/${owner}/${repo}/actions/runs?status=in_progress&per_page=20`, token);
+  const pending = new Set(busyRunnerNames);
+  if (!budget.take()) return [];
+  const runsRes = await gh(`/repos/${owner}/${repo}/actions/runs?per_page=${RECENT_RUNS}`, token);
   const runsBody = (await runsRes.json()) as { workflow_runs: GhRun[] };
-  if (runsBody.workflow_runs.length === 0) return [];
+  // In-progress runs first: they are the likeliest to hold a busy runner.
+  const runs = runsBody.workflow_runs
+    .filter((r) => ACTIVE_RUN_STATUSES.has(r.status))
+    .sort((a, b) => Number(b.status === "in_progress") - Number(a.status === "in_progress"));
 
   const found: ResolvedJob[] = [];
-  for (const run of runsBody.workflow_runs) {
-    for (const job of await listRunJobs(owner, repo, run.id, token)) {
+  for (const run of runs) {
+    if (pending.size === 0) break;
+    const jobs = await listRunJobs(owner, repo, run.id, token, "latest", budget);
+    if (jobs === null) break; // budget exhausted
+    for (const job of jobs) {
       if (job.status !== "in_progress" || !job.runner_name) continue;
-      if (!busyRunnerNames.has(job.runner_name)) continue;
+      if (!pending.has(job.runner_name)) continue;
+      pending.delete(job.runner_name);
       const pr = run.pull_requests[0] ?? null;
       found.push({
         runnerName: job.runner_name,
@@ -106,13 +149,31 @@ export async function resolveJobsInRepo(
 }
 
 /**
- * Every job in a run across all attempts, paginated (the API defaults to 30 per page, which cuts off
- * big matrices). All attempts, not just the latest: a re-run's first-attempt jobs used runner time too.
+ * Every job in a run, paginated (the API defaults to 30 per page, which cuts off big matrices).
+ * History wants `all` attempts — a re-run's first-attempt jobs used runner time too; resolving what
+ * is running NOW only needs the `latest`. With a `budget`, returns null once it is exhausted.
  */
-async function listRunJobs(owner: string, repo: string, runId: number, token: string): Promise<GhJob[]> {
+async function listRunJobs(owner: string, repo: string, runId: number, token: string): Promise<GhJob[]>;
+async function listRunJobs(
+  owner: string,
+  repo: string,
+  runId: number,
+  token: string,
+  filter: "all" | "latest",
+  budget: CallBudget,
+): Promise<GhJob[] | null>;
+async function listRunJobs(
+  owner: string,
+  repo: string,
+  runId: number,
+  token: string,
+  filter: "all" | "latest" = "all",
+  budget?: CallBudget,
+): Promise<GhJob[] | null> {
   const jobs: GhJob[] = [];
   for (let page = 1; ; page++) {
-    const res = await gh(`/repos/${owner}/${repo}/actions/runs/${runId}/jobs?filter=all&per_page=100&page=${page}`, token);
+    if (budget && !budget.take()) return null;
+    const res = await gh(`/repos/${owner}/${repo}/actions/runs/${runId}/jobs?filter=${filter}&per_page=100&page=${page}`, token);
     const body = (await res.json()) as { jobs: GhJob[]; total_count: number };
     jobs.push(...body.jobs);
     if (body.jobs.length < 100 || jobs.length >= body.total_count) return jobs;
