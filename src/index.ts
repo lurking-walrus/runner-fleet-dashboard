@@ -1,6 +1,6 @@
 import { requireBasicAuth, requireBearer } from "./auth";
 import { FRONTEND_HTML } from "./frontend";
-import { runPoll } from "./poller";
+import { runPoll, syncJobHistory } from "./poller";
 import { buildState } from "./state";
 import { upsertTelemetry } from "./db";
 import type { Env } from "./types";
@@ -30,6 +30,9 @@ function isTelemetryPayload(v: unknown): v is TelemetryPayload {
     typeof p.mem_total_mb === "number"
   );
 }
+
+// Must match the second entry in wrangler.jsonc "triggers.crons".
+const HISTORY_SYNC_CRON = "*/10 * * * *";
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -79,6 +82,11 @@ export default {
       return new Response(null, { status: 204 });
     }
 
+    if (url.pathname === "/api/sync-history-now" && req.method === "POST") {
+      await syncJobHistory(env);
+      return new Response(null, { status: 204 });
+    }
+
     if (url.pathname === "/") {
       return new Response(FRONTEND_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -86,7 +94,10 @@ export default {
     return new Response("not found", { status: 404 });
   },
 
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runPoll(env));
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Separate crons = separate invocations, so the history sync's GitHub calls don't eat into the
+    // runner poll's per-invocation subrequest limit.
+    if (controller.cron === HISTORY_SYNC_CRON) ctx.waitUntil(syncJobHistory(env));
+    else ctx.waitUntil(runPoll(env));
   },
 } satisfies ExportedHandler<Env>;

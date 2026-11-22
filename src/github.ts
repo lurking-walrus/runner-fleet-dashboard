@@ -84,9 +84,7 @@ export async function resolveJobsInRepo(
 
   const found: ResolvedJob[] = [];
   for (const run of runsBody.workflow_runs) {
-    const jobsRes = await gh(`/repos/${owner}/${repo}/actions/runs/${run.id}/jobs`, token);
-    const jobsBody = (await jobsRes.json()) as { jobs: GhJob[] };
-    for (const job of jobsBody.jobs) {
+    for (const job of await listRunJobs(owner, repo, run.id, token)) {
       if (job.status !== "in_progress" || !job.runner_name) continue;
       if (!busyRunnerNames.has(job.runner_name)) continue;
       const pr = run.pull_requests[0] ?? null;
@@ -107,18 +105,80 @@ export async function resolveJobsInRepo(
   return found;
 }
 
-/** Final conclusion of one job, used to log an event once a tracked job leaves in_progress. */
-export async function fetchJobConclusion(
+/**
+ * Every job in a run across all attempts, paginated (the API defaults to 30 per page, which cuts off
+ * big matrices). All attempts, not just the latest: a re-run's first-attempt jobs used runner time too.
+ */
+async function listRunJobs(owner: string, repo: string, runId: number, token: string): Promise<GhJob[]> {
+  const jobs: GhJob[] = [];
+  for (let page = 1; ; page++) {
+    const res = await gh(`/repos/${owner}/${repo}/actions/runs/${runId}/jobs?filter=all&per_page=100&page=${page}`, token);
+    const body = (await res.json()) as { jobs: GhJob[]; total_count: number };
+    jobs.push(...body.jobs);
+    if (body.jobs.length < 100 || jobs.length >= body.total_count) return jobs;
+  }
+}
+
+export interface CompletedSelfHostedJob {
+  runKey: string;
+  jobId: number;
+  runnerName: string;
+  repo: string;
+  workflowName: string;
+  jobName: string;
+  runUrl: string;
+  startedAt: string;
+  finishedAt: string;
+  conclusion: string | null;
+}
+
+/**
+ * Completed runs created in the last `lookbackMs` whose (run, attempt) isn't in `alreadySynced`,
+ * returned per run with the self-hosted jobs they contain (at most `maxRuns` runs, newest first). A run with no self-hosted jobs still
+ * comes back (with an empty job list) so the caller can mark it synced and skip it next time.
+ */
+export async function listUnsyncedCompletedRuns(
   owner: string,
   repo: string,
-  jobId: number,
+  lookbackMs: number,
+  alreadySynced: Set<string>,
   token: string,
-): Promise<{ conclusion: string | null; htmlUrl: string; completedAt: string | null } | null> {
-  try {
-    const res = await gh(`/repos/${owner}/${repo}/actions/jobs/${jobId}`, token);
-    const body = (await res.json()) as { conclusion: string | null; html_url: string; completed_at: string | null };
-    return { conclusion: body.conclusion, htmlUrl: body.html_url, completedAt: body.completed_at };
-  } catch {
-    return null;
+  maxRuns: number,
+): Promise<{ runKey: string; jobs: CompletedSelfHostedJob[] }[]> {
+  const since = new Date(Date.now() - lookbackMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const out: { runKey: string; jobs: CompletedSelfHostedJob[] }[] = [];
+  for (let page = 1; ; page++) {
+    const res = await gh(
+      `/repos/${owner}/${repo}/actions/runs?status=completed&created=${encodeURIComponent(`>=${since}`)}&per_page=100&page=${page}`,
+      token,
+    );
+    const body = (await res.json()) as { workflow_runs: GhRun[] };
+    for (const run of body.workflow_runs) {
+      const runKey = `${owner}/${repo}#${run.id}.${run.run_attempt}`;
+      if (alreadySynced.has(runKey)) continue;
+      if (out.length >= maxRuns) return out;
+      const jobs: CompletedSelfHostedJob[] = [];
+      for (const job of await listRunJobs(owner, repo, run.id, token)) {
+        // Skipped/cancelled-while-queued jobs never got a runner. GitHub-hosted jobs report the
+        // "GitHub Actions" runner group. Don't filter on the "self-hosted" label: Dependabot jobs
+        // land on the fleet with runs-on: [dependabot] and no such label.
+        if (!job.runner_name || !job.started_at || !job.completed_at) continue;
+        if (job.runner_group_name === "GitHub Actions" || job.runner_name.startsWith("GitHub Actions ")) continue;
+        jobs.push({
+          runKey,
+          jobId: job.id,
+          runnerName: job.runner_name,
+          repo: `${owner}/${repo}`,
+          workflowName: run.name,
+          jobName: job.name,
+          runUrl: run.html_url,
+          startedAt: job.started_at,
+          finishedAt: job.completed_at,
+          conclusion: job.conclusion,
+        });
+      }
+      out.push({ runKey, jobs });
+    }
+    if (body.workflow_runs.length < 100) return out;
   }
 }

@@ -5,8 +5,12 @@
 // Config via env vars (see .env.example):
 //   DASHBOARD_URL       e.g. https://runner-fleet-dashboard.<account>.workers.dev
 //   TELEMETRY_TOKEN      bearer token, matches the Worker's TELEMETRY_TOKEN secret
-//   HOST_ID               must equal the runner name with any trailing "-N" stripped,
-//                            e.g. runners "ci-host-a-linux[-2..-4]" -> HOST_ID=ci-host-a-linux
+//   HOST_ID               the runner pool this machine's readings belong to: the runner name with
+//                            any trailing "-N" (and JIT "-<unix-ts>") stripped,
+//                            e.g. runners "ci-host-a-linux[-2..-4]" -> HOST_ID=ci-host-a-linux.
+//                            Comma-separate several pools that share this machine's resources,
+//                            e.g. HOST_ID=mac-linux-arm64,mac-native-signing; the same reading is
+//                            reported for each.
 //   LOCATION               optional free-text label, e.g. "Build host A (Linux)"
 //   INTERVAL_SECONDS       default 30; ignored in --once mode
 //
@@ -16,8 +20,9 @@
 
 import os from "node:os";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
-const AGENT_VERSION = "0.1.0";
+const AGENT_VERSION = "0.2.0";
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -30,7 +35,10 @@ function requireEnv(name) {
 
 const DASHBOARD_URL = requireEnv("DASHBOARD_URL").replace(/\/$/, "");
 const TELEMETRY_TOKEN = requireEnv("TELEMETRY_TOKEN");
-const HOST_ID = requireEnv("HOST_ID");
+const HOST_IDS = requireEnv("HOST_ID")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const LOCATION = process.env.LOCATION ?? undefined;
 const INTERVAL_MS = Number(process.env.INTERVAL_SECONDS ?? 30) * 1000;
 const ONCE = process.argv.includes("--once");
@@ -95,7 +103,11 @@ function diskUsageGb() {
       const totalGb = (parsed.Used + parsed.Free) / 1e9;
       return { usedGb, totalGb };
     }
-    const res = spawnSync("df", ["-Pk", "/"], { encoding: "utf8" });
+    // On macOS 10.15+ "/" is the sealed, read-only system volume (~10-15 GB used no matter how
+    // full the disk is). User data, Docker images and runner work dirs live on the Data volume,
+    // which shares the same APFS container, so that's the one that fills up.
+    const mount = process.platform === "darwin" && existsSync("/System/Volumes/Data") ? "/System/Volumes/Data" : "/";
+    const res = spawnSync("df", ["-Pk", mount], { encoding: "utf8" });
     const line = res.stdout.trim().split("\n")[1];
     const parts = line.trim().split(/\s+/);
     const usedKb = Number(parts[2]);
@@ -111,7 +123,6 @@ async function readTelemetry() {
   const disk = diskUsageGb();
   const totalMem = os.totalmem();
   return {
-    host: HOST_ID,
     location: LOCATION,
     cpu_pct: await cpuPercent(),
     cpu_count: os.cpus().length,
@@ -126,26 +137,35 @@ async function readTelemetry() {
 }
 
 async function reportOnce() {
-  const payload = await readTelemetry();
-  const res = await fetch(`${DASHBOARD_URL}/api/telemetry`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${TELEMETRY_TOKEN}`,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    console.error(`telemetry post failed: ${res.status} ${await res.text()}`);
-  } else {
-    console.log(`reported: cpu ${payload.cpu_pct.toFixed(0)}% mem ${(payload.mem_used_mb / payload.mem_total_mb * 100).toFixed(0)}% disk ${(payload.disk_used_gb / payload.disk_total_gb * 100).toFixed(0)}%`);
+  const reading = await readTelemetry();
+  let ok = true;
+  for (const host of HOST_IDS) {
+    const res = await fetch(`${DASHBOARD_URL}/api/telemetry`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${TELEMETRY_TOKEN}`,
+      },
+      body: JSON.stringify({ host, ...reading }),
+    });
+    if (!res.ok) {
+      ok = false;
+      console.error(`telemetry post for ${host} failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+    }
+  }
+  if (ok) {
+    console.log(`reported ${HOST_IDS.join(",")}: cpu ${reading.cpu_pct.toFixed(0)}% mem ${(reading.mem_used_mb / reading.mem_total_mb * 100).toFixed(0)}% disk ${(reading.disk_used_gb / reading.disk_total_gb * 100).toFixed(0)}%`);
   }
 }
 
 if (ONCE) {
-  await reportOnce();
+  // One line on failure (e.g. the network is down), not a crash trace; the scheduler retries.
+  await reportOnce().catch((err) => {
+    console.error("report failed:", err.message, err.cause?.code ?? "");
+    process.exitCode = 1;
+  });
 } else {
-  console.log(`fleet-agent starting: host=${HOST_ID} interval=${INTERVAL_MS / 1000}s target=${DASHBOARD_URL}`);
+  console.log(`fleet-agent starting: hosts=${HOST_IDS.join(",")} interval=${INTERVAL_MS / 1000}s target=${DASHBOARD_URL}`);
   for (;;) {
     await reportOnce().catch((err) => console.error("report failed:", err.message));
     await new Promise((r) => setTimeout(r, INTERVAL_MS));
