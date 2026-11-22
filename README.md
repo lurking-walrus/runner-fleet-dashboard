@@ -25,6 +25,13 @@ from each agent's own uncommitted `.env` via `LOCATION`.
   under `ci-host-a-linux`.
 - The `agent/` script runs on each physical host and pushes CPU/RAM/disk to
   `/api/telemetry`, keyed by that same pool name.
+- A second cron (every 10 minutes) copies finished self-hosted jobs from GitHub's
+  completed workflow runs into `job_history`, which feeds the per-pool usage stats.
+  It reads GitHub's record rather than what the 2-minute poll happened to see,
+  because ephemeral runners deregister the moment a job ends and most jobs
+  finish between polls. At most `HISTORY_SYNC_MAX_RUNS` runs are fetched per
+  tick; a backlog (e.g. right after deploying) drains over the next few ticks.
+  `POST /api/sync-history-now` triggers one tick by hand.
 - The dashboard (HTTP Basic Auth-gated) polls `/api/state` every 20s.
 
 ## Deploy
@@ -106,5 +113,5 @@ curl -u dev:<DASHBOARD_PASSWORD> -X POST http://localhost:8787/api/poll-now   # 
 - Telemetry is per physical host, not per runner process — if two runners on
   the same box are both busy, they share the same CPU/RAM/disk numbers,
   because they're literally sharing the same hardware.
-- No charts yet. Each pool shows 24h/7d usage (jobs run, busy time, failures, last job, avg/peak CPU), built from `job_history` (written when a job finishes) and `telemetry_samples` (one per host per ~5 min, kept 7 days). Apply migration 0003 before deploying.
+- No charts yet. Each pool shows 24h/7d usage (jobs run, busy time, failures, last job, avg/peak CPU), built from `job_history` (synced from GitHub's completed runs, 24h lookback, so the 7d figures fill in over the first week) and `telemetry_samples` (one per host per ~5 min, kept 7 days).
 - Ephemeral/JIT runners (`<prefix>-<slot>-<unix-ts>`) group by stripping the timestamp, then the slot, so the agent's `HOST_ID` is the bare prefix (e.g. `mac-linux-arm64`).

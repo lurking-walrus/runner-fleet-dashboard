@@ -1,5 +1,5 @@
 import type { GhRunner, ResolvedJob } from "./types";
-import { derivePool } from "./github";
+import { derivePool, type CompletedSelfHostedJob } from "./github";
 
 export async function upsertRunner(db: D1Database, runner: GhRunner, scopeLabel: string, now: string) {
   await db
@@ -14,10 +14,12 @@ export async function upsertRunner(db: D1Database, runner: GhRunner, scopeLabel:
     .bind(
       runner.name,
       scopeLabel,
-      runner.os,
+      runner.os ?? "",
       runner.status,
       runner.busy ? 1 : 0,
-      runner.version,
+      // A JIT runner that has just registered can briefly report version: null; the column is
+      // NOT NULL, and one such runner used to abort the whole poll.
+      runner.version ?? "",
       JSON.stringify(runner.labels.map((l) => l.name)),
       derivePool(runner.name),
       now,
@@ -71,54 +73,53 @@ export async function upsertCurrentJob(db: D1Database, job: ResolvedJob, now: st
     .run();
 }
 
-export interface TrackedJob {
-  repo: string;
-  jobId: number;
-  runUrl: string;
-  jobName: string;
-  workflowName: string;
-  startedAt: string;
+export async function currentJobRunnerNames(db: D1Database): Promise<Set<string>> {
+  const { results } = await db.prepare(`SELECT runner_name FROM current_jobs`).all<{ runner_name: string }>();
+  return new Set(results.map((r) => r.runner_name));
 }
 
-export async function currentJobRunnerNames(db: D1Database): Promise<Map<string, TrackedJob>> {
-  const { results } = await db
-    .prepare(`SELECT runner_name, repo, job_id, run_url, job_name, workflow_name, job_started_at FROM current_jobs`)
-    .all<{
-      runner_name: string;
-      repo: string;
-      job_id: number;
-      run_url: string;
-      job_name: string;
-      workflow_name: string;
-      job_started_at: string;
-    }>();
-  return new Map(
-    results.map((r) => [
-      r.runner_name,
-      {
-        repo: r.repo,
-        jobId: r.job_id,
-        runUrl: r.run_url,
-        jobName: r.job_name,
-        workflowName: r.workflow_name,
-        startedAt: r.job_started_at,
-      },
-    ]),
-  );
+export async function loadSyncedRunKeys(db: D1Database): Promise<Set<string>> {
+  const { results } = await db.prepare(`SELECT run_key FROM synced_runs`).all<{ run_key: string }>();
+  return new Set(results.map((r) => r.run_key));
 }
 
-export async function recordJobHistory(
+/**
+ * Writes a completed run's self-hosted jobs to job_history and marks the run synced, atomically.
+ * Returns only the jobs that were newly inserted, so overlapping syncs don't double-log events.
+ */
+export async function recordSyncedRun(
   db: D1Database,
-  j: TrackedJob & { runnerName: string; pool: string; finishedAt: string; conclusion: string | null },
-) {
-  const durationS = Math.max(0, Math.round((Date.parse(j.finishedAt) - Date.parse(j.startedAt)) / 1000));
-  await db
-    .prepare(
-      `INSERT OR IGNORE INTO job_history (job_id, pool, runner_name, repo, workflow_name, job_name, run_url, started_at, finished_at, duration_s, conclusion)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(j.jobId, j.pool, j.runnerName, j.repo, j.workflowName, j.jobName, j.runUrl, j.startedAt, j.finishedAt, durationS, j.conclusion)
-    .run();
+  runKey: string,
+  jobs: CompletedSelfHostedJob[],
+  now: string,
+): Promise<CompletedSelfHostedJob[]> {
+  const stmts = jobs.map((j) =>
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO job_history (job_id, pool, runner_name, repo, workflow_name, job_name, run_url, started_at, finished_at, duration_s, conclusion)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        j.jobId,
+        derivePool(j.runnerName),
+        j.runnerName,
+        j.repo,
+        j.workflowName,
+        j.jobName,
+        j.runUrl,
+        j.startedAt,
+        j.finishedAt,
+        Math.max(0, Math.round((Date.parse(j.finishedAt) - Date.parse(j.startedAt)) / 1000)),
+        j.conclusion,
+      ),
+  );
+  stmts.push(db.prepare(`INSERT OR IGNORE INTO synced_runs (run_key, synced_at) VALUES (?, ?)`).bind(runKey, now));
+  const results = await db.batch(stmts);
+  return jobs.filter((_, i) => (results[i]?.meta.changes ?? 0) > 0);
+}
+
+export async function pruneSyncedRuns(db: D1Database, olderThan: string) {
+  await db.prepare(`DELETE FROM synced_runs WHERE synced_at < ?`).bind(olderThan).run();
 }
 
 export async function deleteCurrentJob(db: D1Database, runnerName: string) {

@@ -22,10 +22,10 @@ export type Env = Cloudflare.Env & Secrets;
 export interface GhRunner {
   id: number;
   name: string;
-  os: string;
+  os: string | null;
   status: string;
   busy: boolean;
-  version: string;
+  version: string | null;
   labels: { name: string; type: string }[];
 }
 
@@ -35,7 +35,10 @@ export interface GhJob {
   status: string;
   conclusion: string | null;
   started_at: string;
+  completed_at: string | null;
   runner_name: string | null;
+  runner_group_name: string | null;
+  labels: string[];
 }
 
 export interface GhRun {
@@ -43,6 +46,7 @@ export interface GhRun {
   name: string;
   html_url: string;
   status: string;
+  run_attempt: number;
   pull_requests: { number: number; url: string }[];
 }
 

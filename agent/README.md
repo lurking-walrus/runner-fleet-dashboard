@@ -5,13 +5,35 @@ to the dashboard. Run one instance per **physical machine**, not per runner —
 several runner processes on the same box (e.g. the four `ci-host-a-linux*`
 runners) share one host and therefore one agent.
 
-`HOST_ID` must equal the runner name with any trailing `-N` stripped — that's
-how the dashboard groups a runner fleet back to the physical box it's on:
+`HOST_ID` must equal the runner pool name — the runner name with any trailing `-N`
+slot and, for ephemeral/JIT runners, the `-<unix-ts>` suffix stripped. That's how
+the dashboard groups a runner fleet back to the resources it runs on:
 
 | Runners | HOST_ID |
 |---|---|
 | `ci-host-a-linux`, `-2`, `-3`, `-4` | `ci-host-a-linux` |
-| `ci-host-b-arm64-1`, `-2` | `ci-host-b-arm64` |
+| `ci-host-b-arm64-1-1791294671`, `-2-1791294702` (ephemeral) | `ci-host-b-arm64` |
+
+A mismatch fails silently: the agent posts fine, but the dashboard shows "no
+telemetry agent reporting" for the pool and raises `stale_telemetry`. When a
+fleet is re-registered under new names, update `HOST_ID` too.
+
+### Several pools on one machine
+
+If two pools share the same resources (e.g. container runners and a native
+runner on one Mac), list both: `HOST_ID=ci-host-b-arm64,ci-host-b-signing`.
+The agent takes one reading and reports it under each pool.
+
+If a pool runs inside a resource-capped VM (WSL2 with a `.wslconfig` memory /
+`processors` cap, or a Docker Desktop VM), report what its runners can actually
+use: run the agent *inside* the VM for that pool, and a second agent on the
+host for any pool that runs natively there. For example, on a Windows PC with
+ephemeral WSL runners and a native Windows runner, run one agent in WSL with
+`HOST_ID=<wsl pool>` and one on Windows with `HOST_ID=<windows pool>`.
+
+On macOS the agent reads disk usage from `/System/Volumes/Data`, not `/`
+(which is the read-only system volume, ~10–15 GB used no matter how full the
+disk is).
 
 ## Config
 

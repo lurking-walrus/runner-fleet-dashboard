@@ -1,14 +1,16 @@
 import {
   currentJobRunnerNames,
   deleteCurrentJob,
+  loadSyncedRunKeys,
   logEvent,
-  recordJobHistory,
+  pruneSyncedRuns,
   pruneVanishedRunners,
   recordPoll,
+  recordSyncedRun,
   upsertCurrentJob,
   upsertRunner,
 } from "./db";
-import { derivePool, fetchJobConclusion, listOrgRepos, listRunnersForScope, parseScopes, resolveJobsInRepo } from "./github";
+import { listOrgRepos, listRunnersForScope, listUnsyncedCompletedRuns, parseScopes, resolveJobsInRepo } from "./github";
 import { alertIfPollerFailing, alertIfPollerRecovered } from "./alerts";
 import { resolveGithubToken } from "./github-auth";
 import type { Env, PollScope } from "./types";
@@ -49,7 +51,7 @@ export async function runPoll(env: Env) {
           now,
         );
       }
-      if (prev && prev.version !== runner.version) {
+      if (prev && prev.version && runner.version && prev.version !== runner.version) {
         await logEvent(
           env.DB,
           {
@@ -94,38 +96,15 @@ export async function runPoll(env: Env) {
       }
     }
 
+    // current_jobs mirrors what's in progress right now. Finished jobs are recorded by
+    // syncJobHistory() from GitHub's completed runs, not inferred here: an ephemeral runner
+    // deregisters as soon as its job ends, and most jobs finish between two polls anyway.
     const previouslyTracked = await currentJobRunnerNames(env.DB);
     for (const job of resolved.values()) {
       await upsertCurrentJob(env.DB, job, now);
     }
-    for (const [runnerName, prevJob] of previouslyTracked) {
-      if (resolved.has(runnerName)) continue;
-      // This runner's job left in_progress since the last poll — log its outcome once.
-      const [prevOwner = "", prevRepo = ""] = prevJob.repo.split("/");
-      const result = await fetchJobConclusion(prevOwner, prevRepo, prevJob.jobId, ghToken);
-      if (result) {
-        if (result.conclusion) {
-          await recordJobHistory(env.DB, {
-            ...prevJob,
-            runnerName,
-            pool: derivePool(runnerName),
-            finishedAt: result.completedAt ?? now,
-            conclusion: result.conclusion,
-          });
-        }
-        await logEvent(
-          env.DB,
-          {
-            severity: result.conclusion === "failure" ? "error" : "info",
-            kind: result.conclusion === "failure" ? "job_failed" : "job_succeeded",
-            runnerName,
-            repo: prevJob.repo,
-            message: `job on ${prevJob.repo} finished: ${result.conclusion ?? "unknown"}`,
-          },
-          now,
-        );
-      }
-      await deleteCurrentJob(env.DB, runnerName);
+    for (const runnerName of previouslyTracked) {
+      if (!resolved.has(runnerName)) await deleteCurrentJob(env.DB, runnerName);
     }
 
     await detectIssues(env, now);
@@ -140,6 +119,10 @@ export async function runPoll(env: Env) {
 
 async function detectIssues(env: Env, now: string) {
   const longRunningMs = Number(env.LONG_RUNNING_JOB_MINUTES) * 60_000;
+  // Bound as an ISO string, the same format events.ts values are stored in. SQLite's datetime('now', ...)
+  // returns "YYYY-MM-DD HH:MM:SS", and since "T" sorts after " ", every event from the same UTC
+  // day compared as newer than it — so "re-flag hourly" really meant "once per UTC day".
+  const hourAgo = new Date(Date.parse(now) - 3_600_000).toISOString();
   const staleTelemetryMs = Number(env.TELEMETRY_STALE_MINUTES) * 60_000;
 
   const { results: longJobs } = await env.DB.prepare(
@@ -149,9 +132,9 @@ async function detectIssues(env: Env, now: string) {
     const ageMs = Date.parse(now) - Date.parse(job.job_started_at);
     if (ageMs < longRunningMs) continue;
     const { results: recent } = await env.DB.prepare(
-      `SELECT 1 FROM events WHERE kind = 'long_running_job' AND runner_name = ? AND ts > datetime('now', '-1 hour')`,
+      `SELECT 1 FROM events WHERE kind = 'long_running_job' AND runner_name = ? AND ts > ?`,
     )
-      .bind(job.runner_name)
+      .bind(job.runner_name, hourAgo)
       .all();
     if (recent.length > 0) continue;
     await logEvent(
@@ -185,9 +168,9 @@ async function detectIssues(env: Env, now: string) {
     const offlineForMs = lastTransition ? Date.parse(now) - Date.parse(lastTransition.ts) : Infinity;
     if (offlineForMs < offlineStuckMs) continue;
     const { results: recent } = await env.DB.prepare(
-      `SELECT 1 FROM events WHERE kind = 'runner_stuck_offline' AND runner_name = ? AND ts > datetime('now', '-1 hour')`,
+      `SELECT 1 FROM events WHERE kind = 'runner_stuck_offline' AND runner_name = ? AND ts > ?`,
     )
-      .bind(runner.name)
+      .bind(runner.name, hourAgo)
       .all();
     if (recent.length > 0) continue;
     const durationMsg = Number.isFinite(offlineForMs) ? `for ${Math.round(offlineForMs / 60000)}m` : "for an unknown duration (offline since before this dashboard started tracking it)";
@@ -217,9 +200,9 @@ async function detectIssues(env: Env, now: string) {
     const stale = !lastSeen || Date.parse(now) - Date.parse(lastSeen) > staleTelemetryMs;
     if (!stale) continue;
     const { results: recent } = await env.DB.prepare(
-      `SELECT 1 FROM events WHERE kind = 'stale_telemetry' AND runner_name = ? AND ts > datetime('now', '-1 hour')`,
+      `SELECT 1 FROM events WHERE kind = 'stale_telemetry' AND runner_name = ? AND ts > ?`,
     )
-      .bind(pool)
+      .bind(pool, hourAgo)
       .all();
     if (recent.length > 0) continue;
     await logEvent(
@@ -235,4 +218,54 @@ async function detectIssues(env: Env, now: string) {
       now,
     );
   }
+}
+
+const HISTORY_LOOKBACK_MS = 24 * 3_600_000;
+
+/**
+ * Copies finished self-hosted jobs from GitHub into job_history, which feeds the per-pool usage
+ * stats. Runs from its own cron (every 10 min) so it has its own subrequest budget, separate from
+ * the 2-minute runner poll. Each completed (run, attempt) is fetched once and remembered in
+ * synced_runs; `HISTORY_SYNC_MAX_RUNS` caps the job-list calls per tick, and anything left over is
+ * picked up on the next tick.
+ */
+export async function syncJobHistory(env: Env) {
+  const now = new Date().toISOString();
+  const scopes = parseScopes(env.POLL_SCOPES);
+  const ghToken = await resolveGithubToken(env, scopes);
+  const maxRuns = Number(env.HISTORY_SYNC_MAX_RUNS) || 20;
+  const synced = await loadSyncedRunKeys(env.DB);
+  let budget = maxRuns;
+  let jobsRecorded = 0;
+
+  for (const scope of scopes) {
+    const repos = scope.kind === "org" ? await listOrgRepos(scope.owner, ghToken) : [scope.repo!];
+    for (const repo of repos) {
+      if (budget <= 0) break;
+      const runs = await listUnsyncedCompletedRuns(scope.owner, repo, HISTORY_LOOKBACK_MS, synced, ghToken, budget);
+      budget -= runs.length;
+      for (const { runKey, jobs } of runs) {
+        const inserted = await recordSyncedRun(env.DB, runKey, jobs, now);
+        jobsRecorded += inserted.length;
+        for (const j of inserted) {
+          if (j.conclusion !== "failure" && j.conclusion !== "timed_out") continue;
+          await logEvent(
+            env.DB,
+            {
+              severity: "error",
+              kind: "job_failed",
+              runnerName: j.runnerName,
+              repo: j.repo,
+              message: `${j.workflowName} › ${j.jobName} on ${j.repo} finished: ${j.conclusion}`,
+            },
+            j.finishedAt,
+          );
+        }
+      }
+    }
+  }
+
+  // synced_runs only needs to cover the lookback window (plus a day of margin).
+  await pruneSyncedRuns(env.DB, new Date(Date.parse(now) - HISTORY_LOOKBACK_MS - 86_400_000).toISOString());
+  console.log(`history sync: ${maxRuns - budget} runs, ${jobsRecorded} self-hosted jobs recorded`);
 }
