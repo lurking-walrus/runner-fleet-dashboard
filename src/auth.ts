@@ -18,6 +18,8 @@ async function timingSafeEqual(a: string, b: string): Promise<boolean> {
 }
 
 export async function requireBasicAuth(req: Request, user: string, password: string): Promise<Response | null> {
+  // Unset secrets would otherwise compare as "" and admit `Basic Og==` (#32): refuse instead.
+  if (!user || !password) return new Response("not configured", { status: 503 });
   const header = req.headers.get("Authorization");
   if (header?.startsWith("Basic ")) {
     const decoded = atob(header.slice(6));
@@ -35,6 +37,7 @@ export async function requireBasicAuth(req: Request, user: string, password: str
 }
 
 export async function requireBearer(req: Request, token: string): Promise<Response | null> {
+  if (!token) return new Response("not configured", { status: 503 });
   const header = req.headers.get("Authorization");
   const got = header?.startsWith("Bearer ") ? header.slice(7) : "";
   if (got && (await timingSafeEqual(got, token))) return null;
