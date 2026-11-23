@@ -39,7 +39,7 @@
     // carries over to the next tick.
     "HISTORY_SYNC_MAX_RUNS": "20",
     // Max GitHub calls the 2-minute poll may spend matching busy runners to their jobs. The scan
-    // reads each repo's newest runs once and covers queued AND in-progress ones (a run stays
+    // lists each repo's in-progress AND queued runs (a run stays
     // "queued" while any job waits), most recently pushed repos first, and stops when every busy runner is matched; past this cap the rest show
     // as busy with an unidentified job instead of the whole poll failing on the subrequest limit.
     "POLL_MAX_GITHUB_CALLS": "40"
