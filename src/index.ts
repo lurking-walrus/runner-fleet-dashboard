@@ -2,6 +2,8 @@ import { requireBasicAuth, requireBearer } from "./auth";
 import { FRONTEND_HTML } from "./frontend";
 import { runPoll, syncJobHistory } from "./poller";
 import { buildState } from "./state";
+import { buildTimingReport } from "./timing-report";
+import { TIMING_HTML } from "./timing-page";
 import { upsertTelemetry } from "./db";
 import type { Env } from "./types";
 
@@ -81,6 +83,14 @@ export default {
     if (url.pathname === "/api/state") {
       const state = await buildState(env);
       return Response.json(state);
+    }
+
+    if (url.pathname === "/api/timing") {
+      return Response.json(await buildTimingReport(env.DB));
+    }
+
+    if (url.pathname === "/timing") {
+      return new Response(TIMING_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
     if (url.pathname === "/api/poll-now" && req.method === "POST") {

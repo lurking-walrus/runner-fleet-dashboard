@@ -58,7 +58,7 @@ export const FRONTEND_HTML = `<!doctype html>
 <div class="wrap">
   <header>
     <h1>Runner Fleet</h1>
-    <div id="statusLine" class="status-line">loading…</div>
+    <div><a href="/timing" style="color:var(--blue);font-size:12px">Timings</a> · <span id="statusLine" class="status-line">loading…</span></div>
   </header>
   <div id="pools"></div>
   <div class="feed">
