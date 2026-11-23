@@ -57,6 +57,7 @@ export interface GhRun {
   html_url: string;
   status: string;
   run_attempt: number;
+  created_at?: string;
   pull_requests: { number: number; url: string }[];
 }
 

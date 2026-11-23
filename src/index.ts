@@ -1,6 +1,6 @@
 import { requireBasicAuth, requireBearer } from "./auth";
 import { FRONTEND_HTML } from "./frontend";
-import { runPoll, syncJobHistory } from "./poller";
+import { runPoll, snapshotQueue, syncJobHistory } from "./poller";
 import { buildState } from "./state";
 import { buildTimingReport } from "./timing-report";
 import { TIMING_HTML } from "./timing-page";
@@ -41,6 +41,10 @@ function isTelemetryPayload(v: unknown): v is TelemetryPayload {
 // and job_failed events) stopped filling. One trigger, two jobs, still one job per invocation, so
 // each keeps its own subrequest budget.
 const HISTORY_SYNC_EVERY_MINUTES = 10;
+// The queued-jobs snapshot takes the tick 4 minutes after each history sync (also one job per
+// invocation, so it has its own GitHub-call budget). The runner poll keeps the other three ticks of
+// every five, so it still runs at least every 4 minutes.
+const QUEUE_SNAPSHOT_MINUTE_OFFSET = 4;
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -98,6 +102,11 @@ export default {
       return new Response(null, { status: 204 });
     }
 
+    if (url.pathname === "/api/queue-now" && req.method === "POST") {
+      await snapshotQueue(env);
+      return new Response(null, { status: 204 });
+    }
+
     if (url.pathname === "/api/sync-history-now" && req.method === "POST") {
       await syncJobHistory(env);
       return new Response(null, { status: 204 });
@@ -115,6 +124,7 @@ export default {
     // runner poll's per-invocation subrequest limit.
     const minute = new Date(controller.scheduledTime).getUTCMinutes();
     if (minute % HISTORY_SYNC_EVERY_MINUTES === 0) ctx.waitUntil(syncJobHistory(env));
+    else if (minute % HISTORY_SYNC_EVERY_MINUTES === QUEUE_SNAPSHOT_MINUTE_OFFSET) ctx.waitUntil(snapshotQueue(env));
     else ctx.waitUntil(runPoll(env));
   },
 } satisfies ExportedHandler<Env>;

@@ -100,16 +100,17 @@ export async function recordSyncedRun(
   jobs: CompletedSelfHostedJob[],
   now: string,
 ): Promise<CompletedSelfHostedJob[]> {
-  const existing = new Set<number>();
-  if (jobs.length > 0) {
-    const { results } = await db
-      .prepare(`SELECT job_id FROM job_history WHERE job_id IN (${jobs.map(() => "?").join(",")})`)
-      .bind(...jobs.map((j) => j.jobId))
-      .all<{ job_id: number }>();
-    for (const r of results) existing.add(r.job_id);
-  }
-
+  // One round trip: the lookup of which jobs already have a row is the FIRST statement of the same
+  // batch, so it runs before the upserts. (A Worker invocation has a small cap on D1 queries; a
+  // separate SELECT per run would double the sync's usage.)
   const stmts: D1PreparedStatement[] = [];
+  if (jobs.length > 0) {
+    stmts.push(
+      db
+        .prepare(`SELECT job_id FROM job_history WHERE job_id IN (${jobs.map(() => "?").join(",")})`)
+        .bind(...jobs.map((j) => j.jobId)),
+    );
+  }
   for (const j of jobs) {
     stmts.push(
       db
@@ -152,7 +153,8 @@ export async function recordSyncedRun(
     }
   }
   stmts.push(db.prepare(`INSERT OR IGNORE INTO synced_runs (run_key, synced_at) VALUES (?, ?)`).bind(runKey, now));
-  await db.batch(stmts);
+  const results = await db.batch(stmts);
+  const existing = new Set((jobs.length > 0 ? (results[0]?.results ?? []) : []).map((r) => (r as { job_id: number }).job_id));
   return jobs.filter((j) => !existing.has(j.jobId));
 }
 

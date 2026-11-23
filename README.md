@@ -44,6 +44,13 @@ from each agent's own uncommitted `.env` via `LOCATION`.
   requested labels, and every executed step's duration (`job_history`, `job_steps`). They come from
   the jobs payload the sync already fetches, so there are no extra GitHub calls, and each completed
   job is written once. Raw rows are pruned after `JOB_RETENTION_DAYS` (14).
+- Every 10 minutes (the tick 4 minutes after each history sync, again in place of that tick's poll)
+  a **queued-jobs snapshot** lists the `queued` runs of the 20 most recently pushed repos and their
+  `queued` jobs that ask for the fleet (`self-hosted`, or a non-GitHub-hosted label such as
+  `dependabot`), and the status page shows "N waiting, oldest M min, by label". Budget
+  `QUEUE_MAX_GITHUB_CALLS` (35); over budget it says `N+` and "partial" rather than failing. Runs queued
+  over 3 days are counted and ignored (a run can sit `queued` with no jobs for weeks).
+  `POST /api/queue-now` takes one by hand. The runner poll still runs at least every 4 minutes.
 - The dashboard (HTTP Basic Auth-gated) polls `/api/state` every 20s.
 
 ## Deploy

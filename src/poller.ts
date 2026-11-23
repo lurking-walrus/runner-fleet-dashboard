@@ -14,11 +14,13 @@ import {
 import {
   CallBudget,
   listOrgRepos,
+  listQueuedJobs,
   listRunnersForScope,
   listUnsyncedCompletedRuns,
   parseScopes,
   resolveJobsInRepo,
 } from "./github";
+import { summarizeQueue } from "./queue";
 import { pruneRollups, rollupPendingDay } from "./timing-report";
 import { alertIfPollerFailing, alertIfPollerRecovered } from "./alerts";
 import { resolveGithubToken } from "./github-auth";
@@ -295,4 +297,41 @@ export async function syncJobHistory(env: Env) {
   await pruneRollups(env.DB, Date.parse(now), 90);
   if (rolled) console.log(`timing rollup: ${rolled}`);
   console.log(`history sync: ${maxRuns - budget} runs, ${jobsRecorded} self-hosted jobs recorded`);
+}
+
+const GHOST_RUN_AFTER_MS = 3 * 86_400_000;
+
+/**
+ * Snapshots what is waiting for a self-hosted runner right now into queue_snapshot. Its own tick
+ * (see index.ts) so it has its own GitHub-call budget, separate from the runner poll's.
+ */
+export async function snapshotQueue(env: Env) {
+  const nowMs = Date.now();
+  const scopes = parseScopes(env.POLL_SCOPES);
+  const ghToken = await resolveGithubToken(env, scopes);
+  const budget = new CallBudget(Number(env.QUEUE_MAX_GITHUB_CALLS) || 35);
+  const jobs = [];
+  let runsScanned = 0;
+  let reposSkipped = 0;
+  let ghostRuns = 0;
+  let partial = false;
+  for (const scope of scopes) {
+    if (scope.kind !== "org") continue; // personal repo scopes have no org-wide repo list to scan
+    const repos = await listOrgRepos(scope.owner, ghToken);
+    budget.take(); // the repo list above was one call
+    const r = await listQueuedJobs(scope.owner, repos, ghToken, budget, nowMs, {
+      maxRepos: Number(env.QUEUE_MAX_REPOS) || 20,
+      ghostAfterMs: GHOST_RUN_AFTER_MS,
+    });
+    jobs.push(...r.jobs);
+    runsScanned += r.runsScanned;
+    reposSkipped += r.reposSkipped;
+    ghostRuns += r.ghostRuns;
+    partial ||= r.partial;
+  }
+  const summary = summarizeQueue(jobs, nowMs, { partial, runsScanned, reposSkipped, ghostRuns });
+  await env.DB.prepare(`INSERT OR REPLACE INTO queue_snapshot (id, taken_at, body) VALUES (1, ?, ?)`)
+    .bind(summary.taken_at, JSON.stringify(summary))
+    .run();
+  console.log(`queue snapshot: ${summary.waiting} waiting, oldest ${summary.oldest_s}s, partial=${partial}`);
 }

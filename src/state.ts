@@ -4,12 +4,13 @@ import type { Env } from "./types";
 const METRICS_TTL_MS = 15 * 60_000;
 
 export async function buildState(env: Env) {
-  const [runners, jobs, telemetry, events, pollState] = await Promise.all([
+  const [runners, jobs, telemetry, events, pollState, queue] = await Promise.all([
     env.DB.prepare(`SELECT * FROM runners ORDER BY pool, name`).all(),
     env.DB.prepare(`SELECT * FROM current_jobs`).all(),
     env.DB.prepare(`SELECT * FROM telemetry`).all(),
     env.DB.prepare(`SELECT * FROM events ORDER BY ts DESC LIMIT 100`).all(),
     env.DB.prepare(`SELECT last_run_at, last_ok, last_error FROM poll_state WHERE id = 1`).first(),
+    env.DB.prepare(`SELECT body FROM queue_snapshot WHERE id = 1`).first<{ body: string }>(),
   ]);
 
   const jobByRunner = new Map((jobs.results as Record<string, unknown>[]).map((j) => [j.runner_name as string, j]));
@@ -31,6 +32,7 @@ export async function buildState(env: Env) {
     metrics: await cached(env.DB, "metrics", METRICS_TTL_MS, Date.now(), () => buildMetrics(env)),
     events: events.results,
     poll: pollState,
+    queue: queue ? JSON.parse(queue.body) : null,
     generated_at: new Date().toISOString(),
   };
 }
