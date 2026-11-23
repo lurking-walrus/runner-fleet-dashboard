@@ -16,8 +16,12 @@ class Stmt {
     return new Stmt(this.db, this.sql, params);
   }
   runSync() {
+    // A batch returns rows for SELECTs, like D1.
+    if (/^\s*SELECT/i.test(this.sql)) {
+      return { success: true, results: this.db.prepare(this.sql).all(...this.params) as unknown[], meta: { changes: 0 } };
+    }
     const r = this.db.prepare(this.sql).run(...this.params);
-    return { success: true, results: [], meta: { changes: Number(r.changes) } };
+    return { success: true, results: [] as unknown[], meta: { changes: Number(r.changes) } };
   }
   async run() {
     return this.runSync();

@@ -1,3 +1,4 @@
+import { isFleetLabelSet, type QueuedJob } from "./queue";
 import { labelsKey, queueSeconds, stepTimings, type StepTiming } from "./timing";
 import type { GhJob, GhRun, GhRunner, PollScope, ResolvedJob } from "./types";
 
@@ -255,4 +256,66 @@ export async function listUnsyncedCompletedRuns(
     }
     if (body.workflow_runs.length < 100) return out;
   }
+}
+
+/**
+ * Jobs waiting for a self-hosted runner right now: for each repo (most recently pushed first, at
+ * most `maxRepos`) the `queued` runs, then each run's jobs whose status is `queued` and whose
+ * requested labels name the fleet. Every GitHub call comes out of `budget`; when it runs out the
+ * result is `partial` (counts are a floor), never an error. Runs queued longer than `ghostAfterMs`
+ * are counted and skipped: a run can sit `queued` with no jobs for weeks and would cost a call each
+ * tick for nothing.
+ */
+export async function listQueuedJobs(
+  owner: string,
+  repos: string[],
+  token: string,
+  budget: CallBudget,
+  nowMs: number,
+  opts: { maxRepos: number; ghostAfterMs: number },
+): Promise<{ jobs: QueuedJob[]; runsScanned: number; reposSkipped: number; ghostRuns: number; partial: boolean }> {
+  const jobs: QueuedJob[] = [];
+  let runsScanned = 0;
+  let ghostRuns = 0;
+  let partial = false;
+  const todo = repos.slice(0, opts.maxRepos);
+  let reposSkipped = repos.length - todo.length;
+  for (let i = 0; i < todo.length; i++) {
+    const repo = todo[i]!;
+    if (!budget.take()) {
+      partial = true;
+      reposSkipped += todo.length - i;
+      break;
+    }
+    const res = await gh(`/repos/${owner}/${repo}/actions/runs?status=queued&per_page=100`, token);
+    const body = (await res.json()) as { workflow_runs: GhRun[] };
+    for (const run of body.workflow_runs) {
+      if (run.created_at && nowMs - Date.parse(run.created_at) > opts.ghostAfterMs) {
+        ghostRuns += 1;
+        continue;
+      }
+      const runJobs = await listRunJobs(owner, repo, run.id, token, "latest", budget);
+      if (runJobs === null) {
+        partial = true;
+        break;
+      }
+      runsScanned += 1;
+      for (const job of runJobs) {
+        if (job.status !== "queued" || !isFleetLabelSet(job.labels)) continue;
+        jobs.push({
+          repo: `${owner}/${repo}`,
+          workflow: run.name,
+          job: job.name,
+          labels: labelsKey(job.labels),
+          createdAt: job.created_at ?? run.created_at ?? new Date(nowMs).toISOString(),
+          url: run.html_url,
+        });
+      }
+    }
+    if (partial) {
+      reposSkipped += todo.length - i - 1;
+      break;
+    }
+  }
+  return { jobs, runsScanned, reposSkipped, ghostRuns, partial };
 }

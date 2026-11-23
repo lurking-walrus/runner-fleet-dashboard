@@ -48,6 +48,10 @@
     // lists each repo's in-progress AND queued runs (a run stays
     // "queued" while any job waits), most recently pushed repos first, and stops when every busy runner is matched; past this cap the rest show
     // as busy with an unidentified job instead of the whole poll failing on the subrequest limit.
-    "POLL_MAX_GITHUB_CALLS": "40"
+    "POLL_MAX_GITHUB_CALLS": "40",
+    // The queued-jobs snapshot (every 10 minutes): GitHub calls it may spend, and how many repos
+    // (most recently pushed first) it reads. Over budget it reports a partial count, not an error.
+    "QUEUE_MAX_GITHUB_CALLS": "35",
+    "QUEUE_MAX_REPOS": "20"
   }
 }

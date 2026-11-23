@@ -60,6 +60,7 @@ export const FRONTEND_HTML = `<!doctype html>
     <h1>Runner Fleet</h1>
     <div><a href="/timing" style="color:var(--blue);font-size:12px">Timings</a> · <span id="statusLine" class="status-line">loading…</span></div>
   </header>
+  <div id="queue" class="pool"></div>
   <div id="pools"></div>
   <div class="feed">
     <h2>Recent activity &amp; issues</h2>
@@ -159,6 +160,34 @@ function renderPool(poolName, runners, metrics) {
   </div>\`;
 }
 
+function fmtWait(s) {
+  if (s < 90) return Math.round(s) + "s";
+  if (s < 5400) return Math.round(s / 60) + " min";
+  return (s / 3600).toFixed(1) + " h";
+}
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+function renderQueue(q) {
+  if (!q) return '<div class="pool-name">Waiting for a runner</div><div class="pool-location">no snapshot yet (taken every 10 minutes)</div>';
+  const ageS = (Date.now() - new Date(q.taken_at).getTime()) / 1000;
+  const stale = ageS > 25 * 60;
+  const head = q.waiting === 0
+    ? "nothing waiting"
+    : q.waiting + (q.partial ? "+" : "") + " job" + (q.waiting === 1 ? "" : "s") + " waiting · oldest " + fmtWait(q.oldest_s);
+  const note = [
+    "as of " + fmtAge(q.taken_at) + (stale ? " (STALE: the snapshot tick has not run)" : ""),
+    q.partial ? "partial: GitHub-call budget ran out, so the real count is at least this" : "",
+    q.repos_skipped ? q.repos_skipped + " repos not read" : "",
+    q.ghost_runs ? q.ghost_runs + " run(s) queued over 3 days ignored" : "",
+  ].filter(Boolean).join(" · ");
+  const labels = q.by_labels.map(function (l) {
+    return '<span class="pill">' + esc(l.labels) + " · " + l.n + " · oldest " + fmtWait(l.oldest_s) + "</span>";
+  }).join(" ");
+  const oldest = q.oldest.map(function (j) {
+    return '<div class="runner-row"><span class="runner-name">' + fmtWait(j.waiting_s) + '</span><span class="job-info"><a href="' + esc(j.url) + '" target="_blank" rel="noopener">' + esc(j.workflow) + " › " + esc(j.job) + "</a> on <strong>" + esc(j.repo) + "</strong> · " + esc(j.labels) + "</span></div>";
+  }).join("");
+  return '<div class="pool-head"><div class="pool-name">Waiting for a runner: ' + head + '</div></div><div class="pool-location">' + esc(note) + "</div>" + (labels ? "<div style='margin:8px 0'>" + labels + "</div>" : "") + oldest;
+}
+
 function renderEvent(e) {
   return \`<div class="event">
     <span class="event-sev \${e.severity}"></span>
@@ -175,6 +204,8 @@ async function refresh() {
     return;
   }
   const data = await res.json();
+
+  document.getElementById("queue").innerHTML = renderQueue(data.queue);
 
   const pools = {};
   for (const r of data.runners) {
