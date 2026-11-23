@@ -46,7 +46,7 @@
 <div class="wrap">
   <header>
     <h1>Runner Fleet · Timings</h1>
-    <div><a href="/">Fleet status</a> · <span class="toggle" id="toggle"><button data-w="24h">24 h</button><button data-w="7d">7 d</button></span> · <span class="muted" id="asof">loading…</span></div>
+    <div><a href="/">Fleet status</a> · <form method="post" action="/logout" style="display:inline"><button type="submit" style="background:none;border:0;padding:0;color:inherit;text-decoration:underline;font:inherit;cursor:pointer">Sign out</button></form> · <span class="toggle" id="toggle"><button data-w="24h">24 h</button><button data-w="7d">7 d</button></span> · <span class="muted" id="asof">loading…</span></div>
   </header>
 
   <div class="panel"><h2>Per pool: queue and run time</h2>
@@ -145,6 +145,7 @@ function render() {
 }
 async function load() {
   var res = await fetch("/api/timing");
+  if (res.status === 401 && (res.headers.get("content-type") || "").indexOf("json") >= 0) { location.href = "/login?next=%2Ftiming"; return; }
   if (!res.ok) { document.getElementById("asof").textContent = "failed to load (" + res.status + ")"; return; }
   data = await res.json();
   render();

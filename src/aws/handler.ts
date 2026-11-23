@@ -4,7 +4,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import worker from "../index";
 import { runScheduledJob, scheduledJobFor } from "../schedule";
-import { requireBasicAuth, requireBearer } from "../auth";
+import { dashboardAuthMode, requireBearer, requireDashboardAuth } from "../auth";
+import { constantTimeEqual } from "../session";
+import { handleLogin, handleLogout, LoginLimiter, type LoginConfig, type LoginResult } from "./login";
 import type { Env } from "../types";
 import { S3BlobStore, type BlobStore } from "./blob-store";
 import { cachedSecrets, missingRequired, settingsFrom, ssmSecretLoader, type SecretLoader, type Settings } from "./config";
@@ -16,9 +18,11 @@ export interface FunctionUrlEvent {
   rawPath: string;
   rawQueryString?: string;
   headers?: Record<string, string | undefined>;
+  /** Function URLs move the Cookie header here (payload 2.0). */
+  cookies?: string[];
   body?: string;
   isBase64Encoded?: boolean;
-  requestContext: { domainName?: string; http: { method: string } };
+  requestContext: { domainName?: string; http: { method: string; sourceIp?: string } };
 }
 
 /** EventBridge scheduled event (the fields used here). */
@@ -31,18 +35,26 @@ export interface ScheduledEvent {
 export interface FunctionUrlResult {
   statusCode: number;
   headers: Record<string, string>;
+  /** Set-Cookie values (Function URLs send each as its own header). */
+  cookies?: string[];
   body: string;
   isBase64Encoded: boolean;
 }
 
 export interface App {
   store: SqliteOnS3;
+  limiter: LoginLimiter;
   settings: Settings;
   secrets: SecretLoader;
 }
 
 export function createApp(opts: { blobs: BlobStore; migrations: Migration[]; dir: string; settings: Settings; secrets: SecretLoader }): App {
-  return { store: new SqliteOnS3(opts.blobs, opts.migrations, opts.dir), settings: opts.settings, secrets: opts.secrets };
+  return {
+    store: new SqliteOnS3(opts.blobs, opts.migrations, opts.dir),
+    limiter: new LoginLimiter(opts.blobs),
+    settings: opts.settings,
+    secrets: opts.secrets,
+  };
 }
 
 function isScheduled(event: unknown): event is ScheduledEvent {
@@ -80,6 +92,16 @@ async function handleHttp(app: App, event: FunctionUrlEvent): Promise<FunctionUr
   const method = event.requestContext.http.method.toUpperCase();
   const headers = new Headers();
   for (const [k, v] of Object.entries(event.headers ?? {})) if (v !== undefined) headers.set(k, v);
+
+  // Behind Cloudflare (runners.uresu.com) a Transform Rule adds X-Origin-Auth; with ORIGIN_SECRET
+  // set, a request that did not come through it (the bare Function URL) is refused outright.
+  const viaEdge = !!secrets.ORIGIN_SECRET && (await constantTimeEqual(headers.get("x-origin-auth") ?? "", secrets.ORIGIN_SECRET));
+  if (secrets.ORIGIN_SECRET && !viaEdge) return text(403, "forbidden: use the dashboard's own hostname");
+  headers.delete("x-origin-auth");
+  if (event.cookies?.length) headers.set("cookie", event.cookies.join("; "));
+  // Cloudflare's client address is trustworthy only on a request proven to come through Cloudflare.
+  const clientIp = (viaEdge && headers.get("cf-connecting-ip")) || event.requestContext.http.sourceIp || "unknown";
+
   const host = headers.get("host") ?? event.requestContext.domainName ?? "localhost";
   const url = `https://${host}${event.rawPath}${event.rawQueryString ? `?${event.rawQueryString}` : ""}`;
   const body =
@@ -90,12 +112,17 @@ async function handleHttp(app: App, event: FunctionUrlEvent): Promise<FunctionUr
         : event.body;
   const makeRequest = () => new Request(url, { method, headers, body });
 
+  // The login page and logout: no database, only the S3 failure counter.
+  if (event.rawPath === "/login" || event.rawPath === "/logout") {
+    if (dashboardAuthMode(secrets) !== "session") return { statusCode: 302, headers: { location: "/" }, body: "", isBase64Encoded: false };
+    const r = event.rawPath === "/logout" ? handleLogout() : await handleLogin(makeRequest(), secrets as LoginConfig, app.limiter, clientIp);
+    return fromLogin(r);
+  }
+
   // Authenticate BEFORE touching the database: an anonymous request must not cost an S3 read.
   // index.ts checks again; this is the same function with the same secrets, run earlier.
   const isTelemetry = event.rawPath === "/api/telemetry" && method === "POST";
-  const denied = isTelemetry
-    ? await requireBearer(makeRequest(), secrets.TELEMETRY_TOKEN!)
-    : await requireBasicAuth(makeRequest(), secrets.DASHBOARD_USER!, secrets.DASHBOARD_PASSWORD!);
+  const denied = isTelemetry ? await requireBearer(makeRequest(), secrets.TELEMETRY_TOKEN!) : await requireDashboardAuth(makeRequest(), secrets);
   if (denied) return toResult(denied);
 
   // A page view only ever writes cache rows (report_cache): losing that race is harmless.
@@ -110,6 +137,10 @@ async function handleHttp(app: App, event: FunctionUrlEvent): Promise<FunctionUr
 
 async function toResult(r: Response): Promise<FunctionUrlResult> {
   return { statusCode: r.status, headers: Object.fromEntries(r.headers), body: await r.text(), isBase64Encoded: false };
+}
+
+function fromLogin(r: LoginResult): FunctionUrlResult {
+  return { statusCode: r.status, headers: r.headers, ...(r.cookies.length ? { cookies: r.cookies } : {}), body: r.body, isBase64Encoded: false };
 }
 
 function text(status: number, body: string): FunctionUrlResult {

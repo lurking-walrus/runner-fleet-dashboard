@@ -1,4 +1,4 @@
-import { requireBasicAuth, requireBearer } from "./auth";
+import { requireBearer, requireDashboardAuth } from "./auth";
 import { FRONTEND_HTML } from "./frontend";
 import { runPoll, snapshotQueue, syncJobHistory } from "./poller";
 import { runScheduledJob, scheduledJobFor } from "./schedule";
@@ -71,7 +71,7 @@ export default {
     }
 
     // Everything else is the private dashboard — gate it.
-    const denied = await requireBasicAuth(req, env.DASHBOARD_USER, env.DASHBOARD_PASSWORD);
+    const denied = await requireDashboardAuth(req, env);
     if (denied) return denied;
 
     if (url.pathname === "/api/state") {

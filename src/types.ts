@@ -7,9 +7,18 @@ export interface Secrets {
   GH_APP_INSTALLATION_ID?: string;
   // Fallback fine-grained PAT, used only when no App is configured or minting an App token fails.
   GH_PAT?: string;
-  // Gates the dashboard UI and API (HTTP Basic Auth).
-  DASHBOARD_USER: string;
-  DASHBOARD_PASSWORD: string;
+  // The dashboard's browser login (src/aws/login.ts, src/session.ts): the one admin's username, a
+  // salted scrypt hash of the password (scripts/store-admin-login.sh writes both), and the key the
+  // session cookie is signed with. When all three are set, Basic Auth is off.
+  DASHBOARD_ADMIN_USER?: string;
+  DASHBOARD_ADMIN_PASSWORD_HASH?: string;
+  SESSION_SIGNING_KEY?: string;
+  // Legacy HTTP Basic Auth, used only while the login above is not configured.
+  DASHBOARD_USER?: string;
+  DASHBOARD_PASSWORD?: string;
+  // Set when the dashboard sits behind Cloudflare (runners.uresu.com): every HTTP request must carry
+  // it in X-Origin-Auth, which a Cloudflare Transform Rule adds, so the bare Function URL is closed.
+  ORIGIN_SECRET?: string;
   // Optional: a Slack/Discord-compatible incoming webhook URL. When set, poller failure and
   // recovery alerts are POSTed there as {text, content} in addition to being logged as events.
   ALERT_WEBHOOK_URL?: string;
