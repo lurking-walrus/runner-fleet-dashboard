@@ -17,8 +17,10 @@
     }
   ],
   "triggers": {
-    // */2: runner status + in-progress jobs. */10: finished-job history sync (src/index.ts HISTORY_SYNC_CRON).
-    "crons": ["*/2 * * * *", "*/10 * * * *"]
+    // ONE trigger: the Workers Free plan allows 5 cron triggers per account and other Workers use
+    // the rest. */2 runs the runner poll, except on minutes divisible by 10, which run the
+    // finished-job history sync instead (src/index.ts HISTORY_SYNC_EVERY_MINUTES).
+    "crons": ["*/2 * * * *"]
   },
   "vars": {
     // Comma-separated "org:<name>" / "repo:<owner>/<name>" scopes to poll for runners.
