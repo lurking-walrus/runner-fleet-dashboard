@@ -1,3 +1,4 @@
+import { cached } from "./cache";
 import { annotationsFor, baselineFor, ANNOTATIONS, type Annotation, type Baseline } from "./timing-notes";
 import { KEY_SEP, poolCounts, rankedStats, slotMinutesPerDay, SOURCES, statsSql, type SourceKind, type Stat } from "./timing-stats";
 
@@ -232,23 +233,11 @@ export async function buildTrend(
 
 // ---- Cache + assembly ----------------------------------------------------------------------
 
-async function cached<T>(db: D1Database, name: string, ttlMs: number, now: number, compute: () => Promise<T>): Promise<T> {
-  const row = await db
-    .prepare(`SELECT computed_at, body FROM report_cache WHERE name = ?`)
-    .bind(name)
-    .first<{ computed_at: string; body: string }>();
-  if (row && now - Date.parse(row.computed_at) < ttlMs) return JSON.parse(row.body) as T;
-  const fresh = await compute();
-  await db
-    .prepare(`INSERT OR REPLACE INTO report_cache (name, computed_at, body) VALUES (?, ?, ?)`)
-    .bind(name, toIso(now), JSON.stringify(fresh))
-    .run();
-  return fresh;
-}
-
-// How stale each section may get. A 7 d step aggregation reads ~100k rows, so it is recomputed
-// rarely; the 24 h view is the "did my fix work" one and is kept fresher.
-export const TTL = { w24h: 15 * 60_000, w7d: 2 * 3_600_000, trend: 60 * 60_000 } as const;
+// How stale each section may get. Row reads are the scarce resource (see cache.ts): a 7 d step
+// aggregation reads ~120k rows and the 24 h one ~20k. Worst case, a viewer present all day costs
+// 48 x 20k + 4 x 120k + 12 x 20k = ~1.7M reads, inside the 5M/day free allowance with the rest of
+// the dashboard's usage. The 24 h view is the "did my fix work" one, so it is the freshest.
+export const TTL = { w24h: 30 * 60_000, w7d: 6 * 3_600_000, trend: 2 * 3_600_000 } as const;
 
 export interface TimingReport {
   generated_at: string;

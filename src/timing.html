@@ -154,7 +154,7 @@ document.getElementById("toggle").addEventListener("click", function (e) {
   if (w) { win = w; render(); }
 });
 load();
-setInterval(load, 300000);
+setInterval(function () { if (!document.hidden) load(); }, 300000);
 </script>
 </body>
 </html>

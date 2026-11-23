@@ -193,7 +193,10 @@ async function refresh() {
 }
 
 refresh();
-setInterval(refresh, 20000);
+// A tab left open in the background must not poll: every poll reads D1 rows, and the free plan
+// stops all queries for the day at 5M reads. Refresh once when the tab comes back.
+setInterval(function () { if (!document.hidden) refresh(); }, 20000);
+document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
 </script>
 </body>
 </html>`;

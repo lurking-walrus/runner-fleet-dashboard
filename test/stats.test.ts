@@ -256,7 +256,7 @@ describe("report cache", () => {
     seed(raw, [{ queue: 5, finished: T("11:30") }]);
     const cached = await buildTimingReport(db, NOW + 60_000);
     expect(cached.windows["24h"].pools[0]!.jobs).toBe(1); // still the cached answer
-    const fresh = await buildTimingReport(db, NOW + 16 * 60_000); // past the 15 min 24 h TTL
+    const fresh = await buildTimingReport(db, NOW + 31 * 60_000); // past the 30 min 24 h TTL
     expect(fresh.windows["24h"].pools[0]!.jobs).toBe(2);
     expect(fresh.windows["7d"].pools[0]!.jobs).toBe(1); // 7 d keeps its own, longer TTL
   });

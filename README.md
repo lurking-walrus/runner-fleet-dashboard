@@ -115,6 +115,31 @@ npx wrangler dev --test-scheduled
 curl -u dev:<DASHBOARD_PASSWORD> -X POST http://localhost:8787/api/poll-now   # trigger a poll on demand
 ```
 
+## Timings: how long work takes and what to speed up next
+
+`/timing` (and `GET /api/timing`, behind the same auth) shows, for 24 h and 7 d:
+
+- **Per pool**: queue (created to started) and run (started to completed) p50/p90/max, jobs, failures.
+- **Queue by requested label set** (`self-hosted,Linux`, `self-hosted,Linux,container`, `dependabot`, ...).
+- **Slowest jobs** and **slowest steps**: p50/p90/max and slot-minutes per day, ranked by total time
+  consumed. That ranking, not p50, is the "what to speed up next" list.
+- **Daily trend** (30 days) of p50/p90 for the top jobs, steps and each pool's queue, with the
+  pre-fix baselines and known changes from `Lurking-Walrus/.github-private` docs/RUNNER-FLEET.md
+  drawn on it (`src/timing-notes.ts`; add a line there when something ships).
+
+Percentiles are exact nearest-rank, computed in SQL (window functions), so any number can be
+reproduced by hand. A UTC day is rolled up into `timing_daily` once it is over; today is computed live
+and drawn partial.
+
+### D1 row-read budget
+
+The account is on D1's free plan: **5M rows read per UTC day, then every query fails until 00:00Z**
+(`code: 7500`; it did on 2026-11-23 by 15:49Z, and the deploy's migration step failed with it). So:
+the 20-second `/api/state` poll no longer recomputes its usage metrics (cached 15 min), pages stop
+polling while their tab is hidden, and the timing report sections are cached in `report_cache`
+(24 h: 30 min, 7 d: 6 h, trend: 2 h). Anything new that scans more than a few hundred rows goes
+through `src/cache.ts`.
+
 ## Known limitations (v1)
 
 - GitHub API polling only sees org-level runners and any `repo:`-scoped
@@ -125,5 +150,5 @@ curl -u dev:<DASHBOARD_PASSWORD> -X POST http://localhost:8787/api/poll-now   # 
 - Telemetry is per physical host, not per runner process — if two runners on
   the same box are both busy, they share the same CPU/RAM/disk numbers,
   because they're literally sharing the same hardware.
-- No charts yet. Each pool shows 24h/7d usage (jobs run, busy time, failures, last job, avg/peak CPU), built from `job_history` (synced from GitHub's completed runs, 24h lookback, so the 7d figures fill in over the first week) and `telemetry_samples` (one per host per ~5 min, kept 7 days).
+- Charts are only on `/timing` (small SVG trends). Each pool on the status page shows 24h/7d usage (jobs run, busy time, failures, last job, avg/peak CPU), built from `job_history` (synced from GitHub's completed runs, 24h lookback, so the 7d figures fill in over the first week) and `telemetry_samples` (one per host per ~5 min, kept 7 days).
 - Ephemeral/JIT runners (`<prefix>-<slot>-<unix-ts>`) group by stripping the timestamp, then the slot, so the agent's `HOST_ID` is the bare prefix (e.g. `mac-linux-arm64`).
