@@ -7,7 +7,14 @@ async function timingSafeEqual(a: string, b: string): Promise<boolean> {
     crypto.subtle.digest("SHA-256", aBytes),
     crypto.subtle.digest("SHA-256", bBytes),
   ]);
-  return crypto.subtle.timingSafeEqual(aHash, bHash);
+  // Constant-time over the two fixed-length digests. Written out rather than
+  // crypto.subtle.timingSafeEqual, which is a Cloudflare Workers extension that Node (the AWS
+  // deployment, issue #28) does not have.
+  const x = new Uint8Array(aHash);
+  const y = new Uint8Array(bHash);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i]! ^ y[i]!;
+  return diff === 0;
 }
 
 export async function requireBasicAuth(req: Request, user: string, password: string): Promise<Response | null> {

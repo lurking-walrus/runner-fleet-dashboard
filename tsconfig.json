@@ -9,5 +9,7 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "worker-configuration.d.ts"]
+  "include": ["src", "worker-configuration.d.ts"],
+  // The AWS entry point runs on Node, not workerd: tsconfig.test.json checks it with Node's types.
+  "exclude": ["src/aws"]
 }

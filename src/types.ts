@@ -15,6 +15,9 @@ export interface Secrets {
   ALERT_WEBHOOK_URL?: string;
   // Bearer token the host telemetry agents authenticate with.
   TELEMETRY_TOKEN: string;
+  // Not a secret: an optional setting the AWS deployment sets (src/aws/config.ts) and the Worker
+  // does not. Seconds a host's telemetry snapshot is kept before another report overwrites it.
+  TELEMETRY_MIN_WRITE_SECONDS?: string;
 }
 
 export type Env = Cloudflare.Env & Secrets;

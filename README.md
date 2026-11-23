@@ -93,6 +93,25 @@ The `GH_PAT` fallback needs the same permissions, as a fine-grained PAT:
 npx wrangler deploy
 ```
 
+## Running on AWS (issue #28)
+
+The same code also runs as an AWS Lambda, for when D1's free-plan read limit is the constraint.
+`src/aws/` is a thin Node entry point around the UNCHANGED Worker handlers:
+
+- `handler.ts`: a Lambda Function URL request becomes the Worker's `fetch()`; an EventBridge rule
+  on `cron(*/2 * * * ? *)` becomes its `scheduled()` (`src/schedule.ts` picks the same job per
+  tick on both).
+- `store.ts`: the database is SQLite files in S3 (`main.db`, and `telemetry.db` for the agents'
+  frequent writes), opened with `node:sqlite` through the same D1 API (`sqlite-d1.ts`, which is also
+  what the tests run against). Writes are S3 conditional writes on the ETag that was read; a lost
+  race redoes the work (cron, telemetry) or drops a cache write (page views). Migrations are the
+  same files D1 applies.
+- `config.ts`: settings are `wrangler.jsonc` `vars` (copied into the package), secrets are SSM
+  SecureString parameters under `SSM_PREFIX`.
+
+`npm run build:lambda` writes `dist/lambda.zip`. Our deployment of it (infrastructure, deploy
+workflow, secrets) is not in this public repository; it lives in the org's private config repo.
+
 ## Configure what gets polled
 
 `wrangler.jsonc` → `vars.POLL_SCOPES`, comma-separated:
