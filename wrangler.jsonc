@@ -40,6 +40,10 @@
     // GitHub call each). Keeps the sync inside the per-invocation subrequest limit; any backlog
     // carries over to the next tick.
     "HISTORY_SYNC_MAX_RUNS": "20",
+    // Days of raw per-job and per-step timings kept in D1 (job_history, job_steps). Steps come with
+    // the jobs payload the sync already fetches, so they cost no extra GitHub calls; this bounds
+    // the storage and the rows D1 reads when a view aggregates them.
+    "JOB_RETENTION_DAYS": "14",
     // Max GitHub calls the 2-minute poll may spend matching busy runners to their jobs. The scan
     // lists each repo's in-progress AND queued runs (a run stays
     // "queued" while any job waits), most recently pushed repos first, and stops when every busy runner is matched; past this cap the rest show

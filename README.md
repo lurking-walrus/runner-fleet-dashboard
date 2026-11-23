@@ -40,6 +40,10 @@ from each agent's own uncommitted `.env` via `LOCATION`.
   finish between polls. At most `HISTORY_SYNC_MAX_RUNS` runs are fetched per
   tick; a backlog (e.g. right after deploying) drains over the next few ticks.
   `POST /api/sync-history-now` triggers one tick by hand.
+- The same sync captures **timings** for each job: queue time (created to started), run time,
+  requested labels, and every executed step's duration (`job_history`, `job_steps`). They come from
+  the jobs payload the sync already fetches, so there are no extra GitHub calls, and each completed
+  job is written once. Raw rows are pruned after `JOB_RETENTION_DAYS` (14).
 - The dashboard (HTTP Basic Auth-gated) polls `/api/state` every 20s.
 
 ## Deploy

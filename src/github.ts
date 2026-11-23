@@ -1,3 +1,4 @@
+import { labelsKey, queueSeconds, stepTimings, type StepTiming } from "./timing";
 import type { GhJob, GhRun, GhRunner, PollScope, ResolvedJob } from "./types";
 
 const API = "https://api.github.com";
@@ -195,6 +196,10 @@ export interface CompletedSelfHostedJob {
   startedAt: string;
   finishedAt: string;
   conclusion: string | null;
+  createdAt: string | null;
+  queueS: number | null;
+  labels: string;
+  steps: StepTiming[];
 }
 
 /**
@@ -240,6 +245,10 @@ export async function listUnsyncedCompletedRuns(
           startedAt: job.started_at,
           finishedAt: job.completed_at,
           conclusion: job.conclusion,
+          createdAt: job.created_at ?? null,
+          queueS: queueSeconds(job.created_at, job.started_at),
+          labels: labelsKey(job.labels),
+          steps: stepTimings(job.steps),
         });
       }
       out.push({ runKey, jobs });

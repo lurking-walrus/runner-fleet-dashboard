@@ -83,9 +83,16 @@ export async function loadSyncedRunKeys(db: D1Database): Promise<Set<string>> {
   return new Set(results.map((r) => r.run_key));
 }
 
+// D1 allows at most 100 bound parameters per statement.
+const STEP_ROWS_PER_STATEMENT = 16; // 6 params each
+
 /**
- * Writes a completed run's self-hosted jobs to job_history and marks the run synced, atomically.
- * Returns only the jobs that were newly inserted, so overlapping syncs don't double-log events.
+ * Writes a completed run's self-hosted jobs (with their queue time, labels and per-step durations)
+ * to job_history/job_steps and marks the run synced, atomically.
+ *
+ * Idempotent: a job that already has a row (written before timings existed, or by an overlapping
+ * sync) only has its missing timing columns filled in; its steps are inserted OR IGNOREd. Returns
+ * only the jobs that did NOT exist before, so re-fetching old runs never double-logs events.
  */
 export async function recordSyncedRun(
   db: D1Database,
@@ -93,29 +100,73 @@ export async function recordSyncedRun(
   jobs: CompletedSelfHostedJob[],
   now: string,
 ): Promise<CompletedSelfHostedJob[]> {
-  const stmts = jobs.map((j) =>
-    db
-      .prepare(
-        `INSERT OR IGNORE INTO job_history (job_id, pool, runner_name, repo, workflow_name, job_name, run_url, started_at, finished_at, duration_s, conclusion)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        j.jobId,
-        derivePool(j.runnerName),
-        j.runnerName,
-        j.repo,
-        j.workflowName,
-        j.jobName,
-        j.runUrl,
-        j.startedAt,
-        j.finishedAt,
-        Math.max(0, Math.round((Date.parse(j.finishedAt) - Date.parse(j.startedAt)) / 1000)),
-        j.conclusion,
-      ),
-  );
+  const existing = new Set<number>();
+  if (jobs.length > 0) {
+    const { results } = await db
+      .prepare(`SELECT job_id FROM job_history WHERE job_id IN (${jobs.map(() => "?").join(",")})`)
+      .bind(...jobs.map((j) => j.jobId))
+      .all<{ job_id: number }>();
+    for (const r of results) existing.add(r.job_id);
+  }
+
+  const stmts: D1PreparedStatement[] = [];
+  for (const j of jobs) {
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO job_history (job_id, pool, runner_name, repo, workflow_name, job_name, run_url, started_at, finished_at, duration_s, conclusion, created_at, queue_s, labels)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(job_id) DO UPDATE SET
+             created_at = COALESCE(job_history.created_at, excluded.created_at),
+             queue_s = COALESCE(job_history.queue_s, excluded.queue_s),
+             labels = COALESCE(job_history.labels, excluded.labels)`,
+        )
+        .bind(
+          j.jobId,
+          derivePool(j.runnerName),
+          j.runnerName,
+          j.repo,
+          j.workflowName,
+          j.jobName,
+          j.runUrl,
+          j.startedAt,
+          j.finishedAt,
+          Math.max(0, Math.round((Date.parse(j.finishedAt) - Date.parse(j.startedAt)) / 1000)),
+          j.conclusion,
+          j.createdAt,
+          j.queueS,
+          j.labels,
+        ),
+    );
+    for (let i = 0; i < j.steps.length; i += STEP_ROWS_PER_STATEMENT) {
+      const chunk = j.steps.slice(i, i + STEP_ROWS_PER_STATEMENT);
+      stmts.push(
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO job_steps (job_id, seq, name, duration_s, conclusion) VALUES ${chunk
+              .map(() => "(?, ?, ?, ?, ?)")
+              .join(", ")}`,
+          )
+          .bind(...chunk.flatMap((st) => [j.jobId, st.seq, st.name, st.durationS, st.conclusion])),
+      );
+    }
+  }
   stmts.push(db.prepare(`INSERT OR IGNORE INTO synced_runs (run_key, synced_at) VALUES (?, ?)`).bind(runKey, now));
-  const results = await db.batch(stmts);
-  return jobs.filter((_, i) => (results[i]?.meta.changes ?? 0) > 0);
+  await db.batch(stmts);
+  return jobs.filter((j) => !existing.has(j.jobId));
+}
+
+/**
+ * Drops raw job and step rows older than `olderThan` (by the job's finish time). Steps first, while
+ * the job rows that say which steps are old still exist.
+ */
+export async function pruneJobTimings(db: D1Database, olderThan: string) {
+  await db.batch([
+    db
+      .prepare(`DELETE FROM job_steps WHERE job_id IN (SELECT job_id FROM job_history WHERE finished_at < ?)`)
+      .bind(olderThan),
+    db.prepare(`DELETE FROM job_history WHERE finished_at < ?`).bind(olderThan),
+  ]);
 }
 
 export async function pruneSyncedRuns(db: D1Database, olderThan: string) {

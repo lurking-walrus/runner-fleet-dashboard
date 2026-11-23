@@ -3,6 +3,7 @@ import {
   deleteCurrentJob,
   loadSyncedRunKeys,
   logEvent,
+  pruneJobTimings,
   pruneSyncedRuns,
   pruneVanishedRunners,
   recordPoll,
@@ -285,5 +286,8 @@ export async function syncJobHistory(env: Env) {
 
   // synced_runs only needs to cover the lookback window (plus a day of margin).
   await pruneSyncedRuns(env.DB, new Date(Date.parse(now) - HISTORY_LOOKBACK_MS - 86_400_000).toISOString());
+  // Raw per-job and per-step rows are bounded: nothing older than JOB_RETENTION_DAYS is kept.
+  const retentionDays = Number(env.JOB_RETENTION_DAYS) || 14;
+  await pruneJobTimings(env.DB, new Date(Date.parse(now) - retentionDays * 86_400_000).toISOString());
   console.log(`history sync: ${maxRuns - budget} runs, ${jobsRecorded} self-hosted jobs recorded`);
 }
