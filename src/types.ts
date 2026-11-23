@@ -34,11 +34,21 @@ export interface GhJob {
   name: string;
   status: string;
   conclusion: string | null;
+  created_at?: string | null;
   started_at: string;
   completed_at: string | null;
   runner_name: string | null;
   runner_group_name: string | null;
   labels: string[];
+  // Present on the same jobs-list response; completed jobs carry final timestamps per step.
+  steps?: {
+    number: number;
+    name: string;
+    status?: string;
+    conclusion: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+  }[];
 }
 
 export interface GhRun {

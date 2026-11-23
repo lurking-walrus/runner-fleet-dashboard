@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "types": "wrangler types"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "types": "wrangler types",
+    "test": "vitest run"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
+    "vitest": "^5.1.1",
     "wrangler": "^4.155.0"
   }
 }
