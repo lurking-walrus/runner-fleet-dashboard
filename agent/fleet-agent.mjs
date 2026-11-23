@@ -3,7 +3,9 @@
 // Reports CPU/RAM/disk/uptime to the runner-fleet-dashboard Worker.
 //
 // Config via env vars (see .env.example):
-//   DASHBOARD_URL       e.g. https://runner-fleet-dashboard.<account>.workers.dev
+//   DASHBOARD_URL       e.g. https://runner-fleet-dashboard.<account>.workers.dev. Comma-separate
+//                            several dashboards (the Worker and the AWS deployment, issue #28) to
+//                            report to each; one that is down does not stop the others.
 //   TELEMETRY_TOKEN      bearer token, matches the Worker's TELEMETRY_TOKEN secret
 //   HOST_ID               the runner pool this machine's readings belong to: the runner name with
 //                            any trailing "-N" (and JIT "-<unix-ts>") stripped,
@@ -22,7 +24,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
-const AGENT_VERSION = "0.2.0";
+const AGENT_VERSION = "0.3.0";
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -33,7 +35,12 @@ function requireEnv(name) {
   return v;
 }
 
-const DASHBOARD_URL = requireEnv("DASHBOARD_URL").replace(/\/$/, "");
+const DASHBOARD_URLS = requireEnv("DASHBOARD_URL")
+  .split(",")
+  .map((s) => s.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+// A target that hangs must not hold up the next reading or the other targets.
+const POST_TIMEOUT_MS = 10_000;
 const TELEMETRY_TOKEN = requireEnv("TELEMETRY_TOKEN");
 const HOST_IDS = requireEnv("HOST_ID")
   .split(",")
@@ -136,25 +143,33 @@ async function readTelemetry() {
   };
 }
 
-async function reportOnce() {
-  const reading = await readTelemetry();
-  let ok = true;
-  for (const host of HOST_IDS) {
-    const res = await fetch(`${DASHBOARD_URL}/api/telemetry`, {
+async function postOne(url, host, reading) {
+  try {
+    const res = await fetch(`${url}/api/telemetry`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${TELEMETRY_TOKEN}`,
       },
       body: JSON.stringify({ host, ...reading }),
+      signal: AbortSignal.timeout(POST_TIMEOUT_MS),
     });
-    if (!res.ok) {
-      ok = false;
-      console.error(`telemetry post for ${host} failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
-    }
+    if (res.ok) return true;
+    console.error(`telemetry post for ${host} to ${url} failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+  } catch (err) {
+    console.error(`telemetry post for ${host} to ${url} failed: ${err.message} ${err.cause?.code ?? ""}`);
   }
-  if (ok) {
+  return false;
+}
+
+async function reportOnce() {
+  const reading = await readTelemetry();
+  const results = await Promise.all(HOST_IDS.flatMap((host) => DASHBOARD_URLS.map((url) => postOne(url, host, reading))));
+  if (results.every(Boolean)) {
     console.log(`reported ${HOST_IDS.join(",")}: cpu ${reading.cpu_pct.toFixed(0)}% mem ${(reading.mem_used_mb / reading.mem_total_mb * 100).toFixed(0)}% disk ${(reading.disk_used_gb / reading.disk_total_gb * 100).toFixed(0)}%`);
+  } else {
+    // --once mode: a non-zero exit so the scheduler's status shows it.
+    process.exitCode = 1;
   }
 }
 
@@ -165,7 +180,7 @@ if (ONCE) {
     process.exitCode = 1;
   });
 } else {
-  console.log(`fleet-agent starting: hosts=${HOST_IDS.join(",")} interval=${INTERVAL_MS / 1000}s target=${DASHBOARD_URL}`);
+  console.log(`fleet-agent starting: hosts=${HOST_IDS.join(",")} interval=${INTERVAL_MS / 1000}s targets=${DASHBOARD_URLS.join(",")}`);
   for (;;) {
     await reportOnce().catch((err) => console.error("report failed:", err.message));
     await new Promise((r) => setTimeout(r, INTERVAL_MS));
