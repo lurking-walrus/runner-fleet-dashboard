@@ -58,7 +58,7 @@ export const FRONTEND_HTML = `<!doctype html>
 <div class="wrap">
   <header>
     <h1>Runner Fleet</h1>
-    <div><a href="/timing" style="color:var(--blue);font-size:12px">Timings</a> · <span id="statusLine" class="status-line">loading…</span></div>
+    <div><a href="/timing" style="color:var(--blue);font-size:12px">Timings</a> · <span id="statusLine" class="status-line">loading…</span> · <form method="post" action="/logout" style="display:inline"><button type="submit" style="background:none;border:0;padding:0;color:var(--blue);font:inherit;font-size:12px;cursor:pointer">Sign out</button></form></div>
   </header>
   <div id="queue" class="pool"></div>
   <div id="pools"></div>
@@ -198,6 +198,10 @@ function renderEvent(e) {
 
 async function refresh() {
   const res = await fetch("/api/state");
+  if (res.status === 401 && res.headers.get("content-type")?.includes("json")) {
+    location.href = "/login?next=" + encodeURIComponent(location.pathname);
+    return;
+  }
   if (!res.ok) {
     document.getElementById("statusLine").textContent = "failed to load (" + res.status + ")";
     document.getElementById("statusLine").classList.add("stale");

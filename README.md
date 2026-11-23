@@ -108,6 +108,23 @@ The same code also runs as an AWS Lambda, for when D1's free-plan read limit is 
   same files D1 applies.
 - `config.ts`: settings are `wrangler.jsonc` `vars` (copied into the package), secrets are SSM
   SecureString parameters under `SSM_PREFIX`.
+- `login.ts`: the sign-in page for the one admin (below).
+
+### Sign-in
+
+Browsers sign in at `/login` with one admin account. SSM holds only the username
+(`DASHBOARD_ADMIN_USER`), a salted scrypt hash of the password (`DASHBOARD_ADMIN_PASSWORD_HASH`)
+and the cookie-signing key (`SESSION_SIGNING_KEY`); `scripts/store-admin-login.sh` writes all three
+from `DASHBOARD_ADMIN_USERNAME`/`DASHBOARD_ADMIN_PASSWORD` in the gitignored `.env` without printing
+the password. A login is a signed `__Host-` cookie (HttpOnly, Secure, SameSite=Lax) valid for 7 days;
+"Sign out" clears it, and `--rotate-session-key` ends every session. A wrong email and a wrong
+password get the same answer; failures are limited per client and in total (5 and 20 per 15
+minutes, counted in S3). `/api/*` without a session answers 401 JSON and the pages send you to
+`/login`. Telemetry agents keep their bearer token. Until the three values exist the old
+`DASHBOARD_USER`/`DASHBOARD_PASSWORD` Basic Auth applies; once they do, it is off.
+
+With `ORIGIN_SECRET` set, every request must carry it in `X-Origin-Auth` (a Cloudflare Transform
+Rule on the public hostname adds it), so the bare Function URL answers 403.
 
 `npm run build:lambda` writes `dist/lambda.zip`. Our deployment of it (infrastructure, deploy
 workflow, secrets) is not in this public repository; it lives in the org's private config repo.

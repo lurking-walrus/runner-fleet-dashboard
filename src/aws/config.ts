@@ -2,12 +2,17 @@
 // build copies them, so there is one place to change a setting), Lambda environment overrides, and
 // secrets from SSM Parameter Store (SecureString under SSM_PREFIX), cached for a few minutes.
 import { GetParametersByPathCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { dashboardAuthMode } from "../auth";
 import type { Secrets } from "../types";
 
 /** Secrets the app reads, and the only parameter names under SSM_PREFIX that are loaded. */
 export const SECRET_KEYS = [
   "GH_APP_PRIVATE_KEY",
   "GH_PAT",
+  "DASHBOARD_ADMIN_USER",
+  "DASHBOARD_ADMIN_PASSWORD_HASH",
+  "SESSION_SIGNING_KEY",
+  "ORIGIN_SECRET",
   "DASHBOARD_USER",
   "DASHBOARD_PASSWORD",
   "TELEMETRY_TOKEN",
@@ -17,8 +22,12 @@ export const SECRET_KEYS = [
 /** Non-secret settings the Lambda environment may set on top of wrangler.jsonc's vars. */
 export const SETTING_KEYS = ["GH_APP_ID", "GH_APP_INSTALLATION_ID", "TELEMETRY_MIN_WRITE_SECONDS"] as const;
 
-/** Without these the app's auth checks would compare against empty strings: refuse instead. */
-export const REQUIRED_SECRETS = ["DASHBOARD_USER", "DASHBOARD_PASSWORD", "TELEMETRY_TOKEN"] as const;
+/**
+ * Without these the app's auth checks would compare against empty strings: refuse instead. The
+ * dashboard login is checked separately (auth.ts dashboardAuthMode): the login page's three
+ * values, or, until they exist, the legacy DASHBOARD_USER/DASHBOARD_PASSWORD.
+ */
+export const REQUIRED_SECRETS = ["TELEMETRY_TOKEN"] as const;
 
 const SECRETS_TTL_MS = 10 * 60_000;
 
@@ -63,5 +72,9 @@ export function cachedSecrets(load: SecretLoader, ttlMs = SECRETS_TTL_MS): Secre
 }
 
 export function missingRequired(secrets: Partial<Secrets>): string[] {
-  return REQUIRED_SECRETS.filter((k) => !secrets[k]);
+  const missing: string[] = REQUIRED_SECRETS.filter((k) => !secrets[k]);
+  if (dashboardAuthMode(secrets) === "unconfigured") {
+    missing.push("DASHBOARD_ADMIN_USER + DASHBOARD_ADMIN_PASSWORD_HASH + SESSION_SIGNING_KEY (or the legacy DASHBOARD_USER + DASHBOARD_PASSWORD)");
+  }
+  return missing;
 }
