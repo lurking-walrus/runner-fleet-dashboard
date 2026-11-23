@@ -31,7 +31,9 @@ from each agent's own uncommitted `.env` via `LOCATION`.
   under `ci-host-a-linux`.
 - The `agent/` script runs on each physical host and pushes CPU/RAM/disk to
   `/api/telemetry`, keyed by that same pool name.
-- A second cron (every 10 minutes) copies finished self-hosted jobs from GitHub's
+- Every 10 minutes (the 2-minute cron's tick on a multiple of 10, in place of
+  that tick's poll — one trigger, because the Workers Free plan allows only 5
+  per account) the Worker copies finished self-hosted jobs from GitHub's
   completed workflow runs into `job_history`, which feeds the per-pool usage stats.
   It reads GitHub's record rather than what the 2-minute poll happened to see,
   because ephemeral runners deregister the moment a job ends and most jobs

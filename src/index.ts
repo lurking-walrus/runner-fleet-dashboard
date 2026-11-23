@@ -31,8 +31,14 @@ function isTelemetryPayload(v: unknown): v is TelemetryPayload {
   );
 }
 
-// Must match the second entry in wrangler.jsonc "triggers.crons".
-const HISTORY_SYNC_CRON = "*/10 * * * *";
+// The history sync runs on the 2-minute cron's ticks that land on a multiple of 10 minutes, in
+// place of that tick's runner poll. It used to be its own "*/10" cron, but this account is on the
+// Workers Free plan (5 cron triggers per ACCOUNT) and other Workers hold the other four: every
+// deploy since that cron was added failed with "reached the Workers Free limit of 5 cron
+// triggers", and the */10 schedule was never registered, so job_history (the per-pool usage line
+// and job_failed events) stopped filling. One trigger, two jobs, still one job per invocation, so
+// each keeps its own subrequest budget.
+const HISTORY_SYNC_EVERY_MINUTES = 10;
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -97,7 +103,8 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Separate crons = separate invocations, so the history sync's GitHub calls don't eat into the
     // runner poll's per-invocation subrequest limit.
-    if (controller.cron === HISTORY_SYNC_CRON) ctx.waitUntil(syncJobHistory(env));
+    const minute = new Date(controller.scheduledTime).getUTCMinutes();
+    if (minute % HISTORY_SYNC_EVERY_MINUTES === 0) ctx.waitUntil(syncJobHistory(env));
     else ctx.waitUntil(runPoll(env));
   },
 } satisfies ExportedHandler<Env>;
