@@ -86,21 +86,25 @@ export async function listOrgRepos(org: string, token: string): Promise<string[]
   return repos;
 }
 
-/** Run statuses that can have a job running on a runner right now. */
-const ACTIVE_RUN_STATUSES = new Set(["in_progress", "queued", "waiting", "pending", "requested"]);
-/** How many of a repo's newest runs the busy-runner scan reads (one call). */
-const RECENT_RUNS = 50;
+/**
+ * Run statuses that can hold a job that is running on a runner right now. `in_progress` first:
+ * those are the likeliest to hold a busy runner.
+ */
+const ACTIVE_RUN_STATUSES = ["in_progress", "queued"] as const;
 
 /**
  * Finds the job currently occupying each of `busyRunnerNames` in one repo.
  *
- * Looks at every ACTIVE run, not only `status=in_progress` ones. GitHub keeps a run `queued` while
- * ANY of its jobs is still waiting for a runner, even though its other jobs are already running —
- * so on a busy fleet (a CI run fans out to more jobs than there are free runners) many busy runners
- * belong to `queued` runs. Filtering on `in_progress` left those runners unresolved and the
- * dashboard drew them as "online · busy" next to "idle" (measured 2026-11-22: 5 of 7 busy runners
- * were in queued runs). One unfiltered list call per repo (the newest `RECENT_RUNS` runs) covers
- * both statuses for the price of one; a job older than that window shows as unidentified.
+ * Looks at `queued` runs as well as `in_progress` ones. GitHub keeps a run `queued` while ANY of its
+ * jobs is still waiting for a runner, even though its other jobs are already running — so on a busy
+ * fleet (a CI run fans out to more jobs than there are free runners) many busy runners belong to
+ * `queued` runs. Filtering on `in_progress` alone left those runners unresolved and the dashboard
+ * drew them as "online · busy" next to "idle" (measured 2026-11-22: 5 of 7 busy runners were in
+ * queued runs).
+ *
+ * One call per status, NOT one unfiltered list: a page of 50 unfiltered runs is ~700 KB of JSON
+ * (measured on the busiest repo), and parsing that for every repo would blow the Workers Free
+ * plan's 10 ms CPU limit. The filtered lists are 15-45 KB.
  *
  * Every GitHub call is taken from `budget`; when it runs out the scan stops and returns what it
  * found, and the caller shows the rest as busy with an unidentified job rather than failing.
@@ -113,13 +117,13 @@ export async function resolveJobsInRepo(
   budget: CallBudget,
 ): Promise<ResolvedJob[]> {
   const pending = new Set(busyRunnerNames);
-  if (!budget.take()) return [];
-  const runsRes = await gh(`/repos/${owner}/${repo}/actions/runs?per_page=${RECENT_RUNS}`, token);
-  const runsBody = (await runsRes.json()) as { workflow_runs: GhRun[] };
-  // In-progress runs first: they are the likeliest to hold a busy runner.
-  const runs = runsBody.workflow_runs
-    .filter((r) => ACTIVE_RUN_STATUSES.has(r.status))
-    .sort((a, b) => Number(b.status === "in_progress") - Number(a.status === "in_progress"));
+  const runs: GhRun[] = [];
+  for (const status of ACTIVE_RUN_STATUSES) {
+    if (!budget.take()) break;
+    const runsRes = await gh(`/repos/${owner}/${repo}/actions/runs?status=${status}&per_page=100`, token);
+    const runsBody = (await runsRes.json()) as { workflow_runs: GhRun[] };
+    runs.push(...runsBody.workflow_runs);
+  }
 
   const found: ResolvedJob[] = [];
   for (const run of runs) {
