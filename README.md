@@ -5,19 +5,22 @@ each runner lives, what it's running (with links to the run and PR), live
 CPU/RAM/disk for the host it's on, and a feed of issues (offline runners,
 failed jobs, long-running jobs, stale telemetry).
 
-Cloudflare Worker (cron poller + API + HTML frontend) backed by D1, plus a
-zero-dependency Node telemetry agent you run on each physical host.
+One AWS Lambda (cron poller + API + HTML frontend) with its database as SQLite
+files in S3, plus a zero-dependency Node telemetry agent you run on each
+physical host. (It began as a Cloudflare Worker on D1; D1's free-plan read limit
+moved it to AWS in issue #28, and the Worker was retired. The handlers are the
+same code, which is why it is still written against the Workers runtime API.)
 
-**The code is public; a deployment is not.** Every route is behind HTTP Basic
-Auth or a bearer token, and every credential — the GitHub PAT, the dashboard
-password, the telemetry token — is a Worker secret set with `wrangler secret
-put`, never a file in this repo. Host names in the examples below are
+**The code is public; a deployment is not.** Every page is behind a sign-in and
+every agent request behind a bearer token, and every credential — the GitHub App
+key, the admin password hash, the telemetry token — is an SSM SecureString
+parameter, never a file in this repo. Host names in the examples below are
 placeholders (`ci-host-a`, `ci-host-b`); a real deployment's host labels come
 from each agent's own uncommitted `.env` via `LOCATION`.
 
 ## How it works
 
-- A cron trigger polls the GitHub API every 2 minutes: runner status per
+- An EventBridge rule polls the GitHub API every 2 minutes: runner status per
   configured scope, then cross-references busy runners against active
   workflow runs to find the repo/workflow/job/PR each one is doing. "Active"
   means `in_progress` **and** `queued`: GitHub keeps a run `queued` while any of
@@ -32,8 +35,8 @@ from each agent's own uncommitted `.env` via `LOCATION`.
 - The `agent/` script runs on each physical host and pushes CPU/RAM/disk to
   `/api/telemetry`, keyed by that same pool name.
 - Every 10 minutes (the 2-minute cron's tick on a multiple of 10, in place of
-  that tick's poll — one trigger, because the Workers Free plan allows only 5
-  per account) the Worker copies finished self-hosted jobs from GitHub's
+  that tick's poll — one schedule, a leftover of the Workers Free plan's 5
+  triggers per account that costs nothing to keep) the dashboard copies finished self-hosted jobs from GitHub's
   completed workflow runs into `job_history`, which feeds the per-pool usage stats.
   It reads GitHub's record rather than what the 2-minute poll happened to see,
   because ephemeral runners deregister the moment a job ends and most jobs
@@ -51,31 +54,13 @@ from each agent's own uncommitted `.env` via `LOCATION`.
   `QUEUE_MAX_GITHUB_CALLS` (35); over budget it says `N+` and "partial" rather than failing. Runs queued
   over 3 days are counted and ignored (a run can sit `queued` with no jobs for weeks).
   `POST /api/queue-now` takes one by hand. The runner poll still runs at least every 4 minutes.
-- The dashboard (HTTP Basic Auth-gated) polls `/api/state` every 20s.
+- The dashboard (behind the sign-in) polls `/api/state` every 20s.
 
-## Deploy
+## GitHub credentials
 
-```bash
-npm install
-npx wrangler d1 migrations apply runner-fleet-dashboard --remote
-```
-
-Set secrets (run these yourself — never paste tokens through an agent):
-
-```bash
-# GitHub App (preferred — no expiring tokens to rotate); key is the .pem GitHub downloads
-npx wrangler secret put GH_APP_ID
-npx wrangler secret put GH_APP_PRIVATE_KEY < path/to/app.private-key.pem
-npx wrangler secret put GH_APP_INSTALLATION_ID   # optional; auto-discovered from POLL_SCOPES if unset
-
-npx wrangler secret put DASHBOARD_USER
-npx wrangler secret put DASHBOARD_PASSWORD
-npx wrangler secret put TELEMETRY_TOKEN     # any long random string; agents send this as a bearer token
-npx wrangler secret put ALERT_WEBHOOK_URL   # optional Slack/Discord webhook for poller failure alerts
-
-# Optional fallback if no App is configured, or minting an App token fails:
-npx wrangler secret put GH_PAT              # fine-grained PAT, same permissions as below
-```
+A GitHub App (preferred: installation tokens are minted per poll, nothing to rotate), or a
+fine-grained PAT as the fallback. On AWS they are SSM parameters `GH_APP_PRIVATE_KEY` (the `.pem`)
+and optionally `GH_PAT`; `GH_APP_ID` and `GH_APP_INSTALLATION_ID` are Lambda environment variables.
 
 **GitHub App permissions** (create it under the `Lurking-Walrus` org, no webhook, install on the org):
 - Organization permissions: **Self-hosted runners: Read-only**, **Administration: Read-only** (to list org repos)
@@ -89,25 +74,20 @@ The `GH_PAT` fallback needs the same permissions, as a fine-grained PAT:
 - Repository permissions on every repo the fleet might run jobs on: **Actions: Read-only**, **Metadata: Read-only**
 - For personal-repo scopes in `POLL_SCOPES`: the same repo permissions plus **Self-hosted runners: Read-only** at repo level
 
-```bash
-npx wrangler deploy
-```
+## Running on AWS
 
-## Running on AWS (issue #28)
+`src/aws/` is a thin Node entry point around the app's handlers (`src/index.ts`):
 
-The same code also runs as an AWS Lambda, for when D1's free-plan read limit is the constraint.
-`src/aws/` is a thin Node entry point around the UNCHANGED Worker handlers:
-
-- `handler.ts`: a Lambda Function URL request becomes the Worker's `fetch()`; an EventBridge rule
+- `handler.ts`: a Lambda Function URL request becomes `fetch()` in `src/index.ts`; an EventBridge rule
   on `cron(*/2 * * * ? *)` becomes its `scheduled()` (`src/schedule.ts` picks the same job per
-  tick on both).
+  tick).
 - `store.ts`: the database is SQLite files in S3 (`main.db`, and `telemetry.db` for the agents'
   frequent writes), opened with `node:sqlite` through the same D1 API (`sqlite-d1.ts`, which is also
   what the tests run against). Writes are S3 conditional writes on the ETag that was read; a lost
   race redoes the work (cron, telemetry) or drops a cache write (page views). Migrations are the
   same files D1 applies.
-- `config.ts`: settings are `wrangler.jsonc` `vars` (copied into the package), secrets are SSM
-  SecureString parameters under `SSM_PREFIX`.
+- `config.ts`: settings are `wrangler.jsonc` `vars` (copied into the package; no Worker is deployed
+  from that file any more), secrets are SSM SecureString parameters under `SSM_PREFIX`.
 - `login.ts`: the sign-in page for the one admin (below).
 
 ### Sign-in
@@ -127,11 +107,19 @@ With `ORIGIN_SECRET` set, every request must carry it in `X-Origin-Auth` (a Clou
 Rule on the public hostname adds it), so the bare Function URL answers 403.
 
 `npm run build:lambda` writes `dist/lambda.zip`. Our deployment of it (infrastructure, deploy
-workflow, secrets) is not in this public repository; it lives in the org's private config repo.
+workflow, secrets, the public hostname) is not in this public repository; it lives in the org's
+private config repo.
+
+### Public hostname
+
+A Function URL takes no custom domain, so a Cloudflare-proxied DNS record fronts it: a CNAME to the
+Function URL host, an Origin Rule that sets the `Host` header to that host (a Function URL answers
+403 to any other), and a Transform Rule that adds `X-Origin-Auth`. With `ORIGIN_SECRET` set to the
+same value the Lambda refuses everything that did not come through Cloudflare. No Worker is involved.
 
 ## Configure what gets polled
 
-`wrangler.jsonc` → `vars.POLL_SCOPES`, comma-separated:
+`wrangler.jsonc` → `vars.POLL_SCOPES` (the settings file the Lambda package copies), comma-separated:
 
 ```
 org:Lurking-Walrus,repo:kornsour/gh-automation
@@ -152,10 +140,9 @@ whatever it runs — a Linux box, WSL on Windows, or a Mac hosting containers.
 
 ```bash
 npm install
-npx wrangler d1 migrations apply runner-fleet-dashboard --local
-cp .dev.vars.example .dev.vars   # fill in a local GH_PAT (e.g. `gh auth token`) or GitHub App values and dev secrets
-npx wrangler dev --test-scheduled
-curl -u dev:<DASHBOARD_PASSWORD> -X POST http://localhost:8787/api/poll-now   # trigger a poll on demand
+npm run types       # the runtime types the code is written against
+npm test            # the handlers run against node:sqlite through the same D1 API as production
+npm run build:lambda
 ```
 
 ## Timings: how long work takes and what to speed up next
@@ -174,14 +161,12 @@ Percentiles are exact nearest-rank, computed in SQL (window functions), so any n
 reproduced by hand. A UTC day is rolled up into `timing_daily` once it is over; today is computed live
 and drawn partial.
 
-### D1 row-read budget
+### Expensive reads are cached
 
-The account is on D1's free plan: **5M rows read per UTC day, then every query fails until 00:00Z**
-(`code: 7500`; it did on 2026-11-23 by 15:49Z, and the deploy's migration step failed with it). So:
-the 20-second `/api/state` poll no longer recomputes its usage metrics (cached 15 min), pages stop
-polling while their tab is hidden, and the timing report sections are cached in `report_cache`
-(24 h: 30 min, 7 d: 6 h, trend: 2 h). Anything new that scans more than a few hundred rows goes
-through `src/cache.ts`.
+The timing report sections are cached in `report_cache` (24 h: 30 min, 7 d: 6 h, trend: 2 h) and the
+`/api/state` usage metrics for 15 min; pages stop polling while their tab is hidden. This began as a
+D1 free-plan row-read budget (it ran out on 2026-11-23 and moved the dashboard to AWS); on AWS it
+keeps page views cheap. Anything new that scans more than a few hundred rows goes through `src/cache.ts`.
 
 ## Known limitations (v1)
 

@@ -5,8 +5,6 @@
   "main": "src/index.ts",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev --test-scheduled",
-    "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "types": "wrangler types",
     "test": "vitest run",

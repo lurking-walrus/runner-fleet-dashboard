@@ -40,9 +40,9 @@ disk is).
 Copy `.env.example` to `.env` (or export the vars however your platform prefers)
 and fill in:
 
-- `DASHBOARD_URL` — the deployed dashboard URL. Comma-separate several (e.g. the Worker and the AWS
-  Function URL while both run, issue #28) to report to each; they must share one `TELEMETRY_TOKEN`
-- `TELEMETRY_TOKEN` — same value as the Worker's `TELEMETRY_TOKEN` secret
+- `DASHBOARD_URL` — the dashboard's public URL (`https://<your dashboard host>`). Comma-separate
+  several to report to each (used during a migration); they must share one `TELEMETRY_TOKEN`
+- `TELEMETRY_TOKEN` — same value as the dashboard's `TELEMETRY_TOKEN` secret
 - `HOST_ID` — see table above
 - `LOCATION` — optional, e.g. `"Build host A (Linux)"`
 
@@ -101,7 +101,7 @@ systemctl --user enable --now fleet-agent.timer
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>DASHBOARD_URL</key><string>https://runner-fleet-dashboard.YOUR-SUBDOMAIN.workers.dev</string>
+    <key>DASHBOARD_URL</key><string>https://YOUR-DASHBOARD-HOST</string>
     <key>TELEMETRY_TOKEN</key><string>REPLACE_ME</string>
     <key>HOST_ID</key><string>ci-host-b-arm64</string>
   </dict>
