@@ -19,6 +19,7 @@ import {
   parseScopes,
   resolveJobsInRepo,
 } from "./github";
+import { pruneRollups, rollupPendingDay } from "./timing-report";
 import { alertIfPollerFailing, alertIfPollerRecovered } from "./alerts";
 import { resolveGithubToken } from "./github-auth";
 import type { Env, PollScope } from "./types";
@@ -289,5 +290,9 @@ export async function syncJobHistory(env: Env) {
   // Raw per-job and per-step rows are bounded: nothing older than JOB_RETENTION_DAYS is kept.
   const retentionDays = Number(env.JOB_RETENTION_DAYS) || 14;
   await pruneJobTimings(env.DB, new Date(Date.parse(now) - retentionDays * 86_400_000).toISOString());
+  // Roll up one finished day per tick (bounded work), and keep the rollups 90 days.
+  const rolled = await rollupPendingDay(env.DB, Date.parse(now), retentionDays);
+  await pruneRollups(env.DB, Date.parse(now), 90);
+  if (rolled) console.log(`timing rollup: ${rolled}`);
   console.log(`history sync: ${maxRuns - budget} runs, ${jobsRecorded} self-hosted jobs recorded`);
 }

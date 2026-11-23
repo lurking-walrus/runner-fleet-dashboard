@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Runner Fleet · Timings</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0b0e14; --panel: #12151d; --border: #232838; --text: #e6e9f0; --muted: #8a92a6;
+    --green: #3ecf8e; --amber: #e8b339; --red: #e5534b; --blue: #5b8def;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f6f8; --panel: #ffffff; --border: #e2e5ec; --text: #1a1d29; --muted: #5c6270; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 14px; margin: 0 0 4px; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 8px; border-top: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; border-top: none; }
+  th:first-child, td:first-child { text-align: left; }
+  td.name { white-space: normal; max-width: 460px; }
+  td.name small { color: var(--muted); display: block; }
+  .toggle button { background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 3px 12px; cursor: pointer; font: inherit; }
+  .toggle button:first-child { border-radius: 6px 0 0 6px; } .toggle button:last-child { border-radius: 0 6px 6px 0; }
+  .toggle button.on { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .bar { display: inline-block; height: 6px; background: var(--blue); border-radius: 3px; vertical-align: middle; margin-right: 6px; }
+  .base { color: var(--amber); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .card .t { font-size: 12px; overflow-wrap: anywhere; }
+  .card svg { width: 100%; height: 76px; display: block; margin-top: 4px; }
+  .legend { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .p50 { stroke: var(--green); } .p90 { stroke: var(--amber); } .bl { stroke: var(--red); stroke-dasharray: 4 3; } .an { stroke: var(--blue); stroke-dasharray: 2 2; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Runner Fleet · Timings</h1>
+    <div><a href="/">Fleet status</a> · <span class="toggle" id="toggle"><button data-w="24h">24 h</button><button data-w="7d">7 d</button></span> · <span class="muted" id="asof">loading…</span></div>
+  </header>
+
+  <div class="panel"><h2>Per pool: queue and run time</h2>
+    <div class="muted">Queue = job created to started. Run = started to completed. Nearest-rank percentiles over finished self-hosted jobs.</div>
+    <div id="pools"></div></div>
+  <div class="panel"><h2>Queue time by requested labels</h2><div id="labels"></div></div>
+  <div class="panel"><h2>Slowest jobs: what to speed up next</h2>
+    <div class="muted">Ranked by total slot-minutes consumed, not by p50. A fast job that runs constantly can cost more than a slow one that runs once.</div>
+    <div id="jobs"></div></div>
+  <div class="panel"><h2>Slowest steps</h2><div id="steps"></div></div>
+  <div class="panel"><h2>Daily trend (30 days)</h2>
+    <div class="muted"><span style="color:var(--green)">p50</span> and <span style="color:var(--amber)">p90</span> per day. Red dashed: the pre-fix baseline from docs/RUNNER-FLEET.md. Blue dotted: a known change. Today is partial.</div>
+    <div id="trend" class="cards"></div></div>
+</div>
+<script>
+var win = "24h", data = null;
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+function dur(s) {
+  if (s == null) return "—";
+  if (s < 60) return s + " s";
+  var m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return m + "m " + (r < 10 ? "0" : "") + r + "s";
+  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+}
+function table(head, rows) {
+  if (!rows.length) return '<div class="muted">no finished jobs with timings in this window yet (the history sync backfills over a few hours)</div>';
+  return "<table><tr>" + head.map(function (h) { return "<th>" + h + "</th>"; }).join("") + "</tr>" + rows.join("") + "</table>";
+}
+function pct(x) { return x ? x.p50 : null; }
+function renderPools(w) {
+  return table(["Pool", "Jobs", "Failed", "Queue p50", "Queue p90", "Queue max", "Run p50", "Run p90", "Run max"], w.pools.map(function (p) {
+    var q = p.queue || {}, r = p.run || {};
+    return "<tr><td>" + esc(p.pool) + "</td><td>" + p.jobs + "</td><td>" + p.failed + "</td><td>" + dur(q.p50) + "</td><td>" + dur(q.p90) + "</td><td>" + dur(q.max) + "</td><td>" + dur(r.p50) + "</td><td>" + dur(r.p90) + "</td><td>" + dur(r.max) + "</td></tr>";
+  }));
+}
+function renderLabels(w) {
+  return table(["runs-on labels", "Jobs", "p50", "p90", "max"], w.labels.map(function (l) {
+    return "<tr><td>" + esc(l.key[0]) + "</td><td>" + l.n + "</td><td>" + dur(l.p50) + "</td><td>" + dur(l.p90) + "</td><td>" + dur(l.max) + "</td></tr>";
+  }));
+}
+function renderRanked(w, list, withStep) {
+  var max = list.length ? list[0].slot_min_per_day : 1;
+  return table([withStep ? "Step" : "Job", "Pool", "Runs", "p50", "p90", "max", "Slot-min/day", "Before"], list.map(function (s) {
+    var k = s.key, repo = k[0], wf = k[1], job = k[2], pool = k[3], step = k[4];
+    var title = withStep ? esc(step) + "<small>" + esc(repo) + " › " + esc(wf) + " › " + esc(job) + "</small>" : esc(job) + "<small>" + esc(repo) + " › " + esc(wf) + "</small>";
+    var w2 = Math.max(2, Math.round((s.slot_min_per_day / (max || 1)) * 60));
+    return '<tr><td class="name">' + title + "</td><td>" + esc(pool) + "</td><td>" + s.n + "</td><td>" + dur(s.p50) + "</td><td>" + dur(s.p90) + "</td><td>" + dur(s.max) + '</td><td><span class="bar" style="width:' + w2 + 'px"></span>' + s.slot_min_per_day + '</td><td class="base">' + (s.baseline ? esc(dur(s.baseline.seconds)) : "") + "</td></tr>";
+  }));
+}
+function dayIndex(day, since) { return Math.round((Date.parse(day) - Date.parse(since)) / 86400000); }
+function chart(s, sinceDay, nDays) {
+  var W = 260, H = 76, L = 4, R = 4, T = 6, B = 6;
+  var vals = s.points.map(function (p) { return p.p90; });
+  if (s.baseline) vals.push(s.baseline.seconds);
+  var maxV = Math.max.apply(null, vals.concat([1]));
+  function x(i) { return L + (i / Math.max(1, nDays - 1)) * (W - L - R); }
+  function y(v) { return H - B - (v / maxV) * (H - T - B); }
+  function line(cls, key) {
+    var pts = s.points.map(function (p) { return x(dayIndex(p.day, sinceDay)) + "," + y(p[key]); });
+    return pts.length ? '<polyline class="' + cls + '" fill="none" stroke-width="1.6" points="' + pts.join(" ") + '"/>' : "";
+  }
+  var dots = s.points.map(function (p) {
+    return '<circle cx="' + x(dayIndex(p.day, sinceDay)) + '" cy="' + y(p.p50) + '" r="2.2" fill="var(--green)"' + (p.partial ? ' opacity=".5"' : "") + "><title>" + esc(p.day) + (p.partial ? " (partial)" : "") + ": n=" + p.n + " p50 " + dur(p.p50) + " p90 " + dur(p.p90) + "</title></circle>";
+  }).join("");
+  var base = s.baseline ? '<line class="bl" stroke-width="1" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(s.baseline.seconds) + '" y2="' + y(s.baseline.seconds) + '"><title>' + esc(s.baseline.label) + "</title></line>" : "";
+  var ann = s.annotations.map(function (a) {
+    var i = dayIndex(a.date, sinceDay);
+    if (i < 0 || i >= nDays) return "";
+    return '<line class="an" stroke-width="1" x1="' + x(i) + '" x2="' + x(i) + '" y1="' + T + '" y2="' + (H - B) + '"><title>' + esc(a.date + " " + a.label) + "</title></line>";
+  }).join("");
+  return '<svg viewBox="0 0 ' + W + " " + H + '" role="img">' + ann + base + line("p90", "p90") + line("p50", "p50") + dots + "</svg>";
+}
+function renderTrend(t) {
+  var nDays = dayIndex(new Date().toISOString().slice(0, 10), t.since_day) + 1;
+  if (!t.series.length) return '<div class="muted">no data yet</div>';
+  return t.series.map(function (s) {
+    var k = s.key, title;
+    if (s.kind === "pool_queue") title = esc(k[0]) + " · queue time";
+    else if (s.kind === "job") title = esc(k[2]) + " <span class='muted'>" + esc(k[3]) + " · " + esc(k[0]) + "</span>";
+    else title = esc(k[4]) + " <span class='muted'>" + esc(k[2]) + " · " + esc(k[3]) + "</span>";
+    var last = s.points[s.points.length - 1];
+    var legend = last ? "latest p50 " + dur(last.p50) + " · p90 " + dur(last.p90) + (s.baseline ? " · " + esc(s.baseline.label) : "") : "no data";
+    return '<div class="card"><div class="t">' + title + "</div>" + chart(s, t.since_day, nDays) + '<div class="legend">' + legend + "</div></div>";
+  }).join("");
+}
+function render() {
+  if (!data) return;
+  var w = data.windows[win];
+  document.getElementById("pools").innerHTML = renderPools(w);
+  document.getElementById("labels").innerHTML = renderLabels(w);
+  document.getElementById("jobs").innerHTML = renderRanked(w, w.jobs, false);
+  document.getElementById("steps").innerHTML = renderRanked(w, w.steps, true);
+  document.getElementById("trend").innerHTML = renderTrend(data.trend);
+  document.getElementById("asof").textContent = "window " + win + " · computed " + new Date(data.generated_at).toLocaleTimeString();
+  Array.prototype.forEach.call(document.querySelectorAll("#toggle button"), function (b) { b.classList.toggle("on", b.getAttribute("data-w") === win); });
+}
+async function load() {
+  var res = await fetch("/api/timing");
+  if (!res.ok) { document.getElementById("asof").textContent = "failed to load (" + res.status + ")"; return; }
+  data = await res.json();
+  render();
+}
+document.getElementById("toggle").addEventListener("click", function (e) {
+  var w = e.target.getAttribute && e.target.getAttribute("data-w");
+  if (w) { win = w; render(); }
+});
+load();
+setInterval(function () { if (!document.hidden) load(); }, 300000);
+</script>
+</body>
+</html>

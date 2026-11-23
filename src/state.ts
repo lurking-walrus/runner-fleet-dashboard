@@ -1,4 +1,7 @@
+import { cached } from "./cache";
 import type { Env } from "./types";
+
+const METRICS_TTL_MS = 15 * 60_000;
 
 export async function buildState(env: Env) {
   const [runners, jobs, telemetry, events, pollState] = await Promise.all([
@@ -23,7 +26,9 @@ export async function buildState(env: Env) {
 
   return {
     runners: enrichedRunners,
-    metrics: await buildMetrics(env),
+    // job_history and telemetry_samples are scanned for these figures (thousands of rows), so they
+    // are recomputed at most every 15 minutes, not on every 20-second dashboard poll.
+    metrics: await cached(env.DB, "metrics", METRICS_TTL_MS, Date.now(), () => buildMetrics(env)),
     events: events.results,
     poll: pollState,
     generated_at: new Date().toISOString(),

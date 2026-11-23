@@ -58,7 +58,7 @@ export const FRONTEND_HTML = `<!doctype html>
 <div class="wrap">
   <header>
     <h1>Runner Fleet</h1>
-    <div id="statusLine" class="status-line">loading…</div>
+    <div><a href="/timing" style="color:var(--blue);font-size:12px">Timings</a> · <span id="statusLine" class="status-line">loading…</span></div>
   </header>
   <div id="pools"></div>
   <div class="feed">
@@ -193,7 +193,10 @@ async function refresh() {
 }
 
 refresh();
-setInterval(refresh, 20000);
+// A tab left open in the background must not poll: every poll reads D1 rows, and the free plan
+// stops all queries for the day at 5M reads. Refresh once when the tab comes back.
+setInterval(function () { if (!document.hidden) refresh(); }, 20000);
+document.addEventListener("visibilitychange", function () { if (!document.hidden) refresh(); });
 </script>
 </body>
 </html>`;
