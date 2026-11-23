@@ -39,3 +39,5 @@ jobs:
       - run: npm run types
       - run: npm run typecheck
       - run: npm test
+      # The AWS Lambda package (issue #28): proves the Node entry point still bundles.
+      - run: npm run build:lambda

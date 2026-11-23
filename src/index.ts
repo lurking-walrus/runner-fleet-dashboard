@@ -1,6 +1,7 @@
 import { requireBasicAuth, requireBearer } from "./auth";
 import { FRONTEND_HTML } from "./frontend";
 import { runPoll, snapshotQueue, syncJobHistory } from "./poller";
+import { runScheduledJob, scheduledJobFor } from "./schedule";
 import { buildState } from "./state";
 import { buildTimingReport } from "./timing-report";
 import { TIMING_HTML } from "./timing-page";
@@ -33,19 +34,6 @@ function isTelemetryPayload(v: unknown): v is TelemetryPayload {
   );
 }
 
-// The history sync runs on the 2-minute cron's ticks that land on a multiple of 10 minutes, in
-// place of that tick's runner poll. It used to be its own "*/10" cron, but this account is on the
-// Workers Free plan (5 cron triggers per ACCOUNT) and other Workers hold the other four: every
-// deploy since that cron was added failed with "reached the Workers Free limit of 5 cron
-// triggers", and the */10 schedule was never registered, so job_history (the per-pool usage line
-// and job_failed events) stopped filling. One trigger, two jobs, still one job per invocation, so
-// each keeps its own subrequest budget.
-const HISTORY_SYNC_EVERY_MINUTES = 10;
-// The queued-jobs snapshot takes the tick 4 minutes after each history sync (also one job per
-// invocation, so it has its own GitHub-call budget). The runner poll keeps the other three ticks of
-// every five, so it still runs at least every 4 minutes.
-const QUEUE_SNAPSHOT_MINUTE_OFFSET = 4;
-
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -60,6 +48,8 @@ export default {
         return new Response("invalid json", { status: 400 });
       }
       if (!isTelemetryPayload(payload)) return new Response("invalid payload", { status: 400 });
+      const now = new Date().toISOString();
+      if (await telemetryIsFresh(env, payload.host, now)) return new Response(null, { status: 204 });
       await upsertTelemetry(
         env.DB,
         {
@@ -75,7 +65,7 @@ export default {
           uptimeS: payload.uptime_s ?? 0,
           agentVersion: payload.agent_version ?? "unknown",
         },
-        new Date().toISOString(),
+        now,
       );
       return new Response(null, { status: 204 });
     }
@@ -120,11 +110,19 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Separate crons = separate invocations, so the history sync's GitHub calls don't eat into the
-    // runner poll's per-invocation subrequest limit.
-    const minute = new Date(controller.scheduledTime).getUTCMinutes();
-    if (minute % HISTORY_SYNC_EVERY_MINUTES === 0) ctx.waitUntil(syncJobHistory(env));
-    else if (minute % HISTORY_SYNC_EVERY_MINUTES === QUEUE_SNAPSHOT_MINUTE_OFFSET) ctx.waitUntil(snapshotQueue(env));
-    else ctx.waitUntil(runPoll(env));
+    ctx.waitUntil(runScheduledJob(env, scheduledJobFor(controller.scheduledTime)));
   },
 } satisfies ExportedHandler<Env>;
+
+/**
+ * TELEMETRY_MIN_WRITE_SECONDS (unset on Cloudflare, so a no-op there): accept a host's report but skip
+ * the write when its stored snapshot is younger than this. On AWS every write is an S3 PUT, the
+ * largest cost line (issue #28); 60 s keeps the live numbers within a minute and changes nothing
+ * the stale-telemetry check (10 min) or the 5-minute samples can see.
+ */
+async function telemetryIsFresh(env: Env, host: string, now: string): Promise<boolean> {
+  const floorS = Number(env.TELEMETRY_MIN_WRITE_SECONDS) || 0;
+  if (floorS <= 0) return false;
+  const row = await env.DB.prepare(`SELECT updated_at FROM telemetry WHERE host = ?`).bind(host).first<{ updated_at: string }>();
+  return !!row && Date.parse(now) - Date.parse(row.updated_at) < floorS * 1000;
+}
