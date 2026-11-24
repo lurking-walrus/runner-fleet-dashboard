@@ -1,9 +1,12 @@
+import { BRAND_CSS, FAVICON_LINK, brandTitle } from "./brand";
+
 export const FRONTEND_HTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Runner Fleet</title>
+${FAVICON_LINK}
 <style>
   :root {
     color-scheme: light dark;
@@ -16,8 +19,9 @@ export const FRONTEND_HTML = `<!doctype html>
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 16px 64px; }
-  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
   h1 { font-size: 20px; margin: 0; }
+  ${BRAND_CSS}
   .status-line { color: var(--muted); font-size: 12px; }
   .status-line.stale { color: var(--red); }
   .pool { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
@@ -60,7 +64,7 @@ export const FRONTEND_HTML = `<!doctype html>
 <body>
 <div class="wrap">
   <header>
-    <h1>Runner Fleet</h1>
+    <h1>${brandTitle("Runner Fleet")}</h1>
     <div><a href="/timing" style="color:var(--blue);font-size:12px">Timings</a> · <span id="statusLine" class="status-line">loading…</span> · <form method="post" action="/logout" style="display:inline"><button type="submit" style="background:none;border:0;padding:0;color:var(--blue);font:inherit;font-size:12px;cursor:pointer">Sign out</button></form></div>
   </header>
   <div id="queue" class="pool"></div>

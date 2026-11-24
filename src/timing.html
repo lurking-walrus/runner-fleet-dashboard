@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Runner Fleet · Timings</title>
+<!--brand:favicon-->
 <style>
   :root {
     color-scheme: light dark;
@@ -40,12 +41,13 @@
   .card svg { width: 100%; height: 76px; display: block; margin-top: 4px; }
   .legend { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .p50 { stroke: var(--green); } .p90 { stroke: var(--amber); } .bl { stroke: var(--red); stroke-dasharray: 4 3; } .an { stroke: var(--blue); stroke-dasharray: 2 2; }
+  /*brand:css*/
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>Runner Fleet · Timings</h1>
+    <h1><!--brand:title-->Runner Fleet · Timings</h1>
     <div><a href="/">Fleet status</a> · <form method="post" action="/logout" style="display:inline"><button type="submit" style="background:none;border:0;padding:0;color:inherit;text-decoration:underline;font:inherit;cursor:pointer">Sign out</button></form> · <span class="toggle" id="toggle"><button data-w="24h">24 h</button><button data-w="7d">7 d</button></span> · <span class="muted" id="asof">loading…</span></div>
   </header>
 
