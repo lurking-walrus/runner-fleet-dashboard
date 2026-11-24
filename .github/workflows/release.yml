@@ -1,0 +1,43 @@
+name: Release
+
+# Cuts a semantic version from the conventional-commit titles merged to main (feat: minor,
+# fix/perf: patch, a `!` or BREAKING CHANGE: major; chore/docs/test/ci: no release), tags the
+# merge commit vX.Y.Z and publishes a GitHub Release with the notes. Nothing else: the package is
+# private, no npm publish, and no commit back to main.
+#
+# Deploying is downstream: Lurking-Walrus/.github-private polls this repository's latest release
+# and opens a PR that pins the deploy to that tag's commit (see its
+# runner-fleet-dashboard-bump.yml). This public repository holds no credential for that.
+#
+# Triggers: a merge by a person fires `push`. A merge made by auto-merge.yml (GITHUB_TOKEN) fires
+# no `push` workflows, so auto-merge.yml dispatches this one after it merges. Both can happen for
+# one commit; semantic-release finds the tag already there and releases nothing the second time.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # the tag and the GitHub Release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    timeout-minutes: 10
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest # allow-bare-runner: public repository: the canonical expression could only ever evaluate to this, and a fork PR must never reach the fleet
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # every commit since the last tag decides the version
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+      - name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npx --yes semantic-release@24.2.3
