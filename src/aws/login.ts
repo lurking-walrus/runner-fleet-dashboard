@@ -12,6 +12,7 @@
 import { randomBytes, scrypt as scryptCb, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import { clearedSessionCookie, constantTimeEqual, sessionCookie, signSession } from "../session";
 import { WriteConflict, type BlobStore } from "./blob-store";
+import { BRAND_CSS, FAVICON_LINK, brandTitle } from "../brand";
 
 const scrypt = (password: string, salt: Buffer, keylen: number, opts: ScryptOptions) =>
   new Promise<Buffer>((resolve, reject) => scryptCb(password, salt, keylen, opts, (err, key) => (err ? reject(err) : resolve(key))));
@@ -194,6 +195,7 @@ export function loginPage(o: { next: string; username?: string; error?: string }
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Runner Fleet · Sign in</title>
+${FAVICON_LINK}
 <style>
   :root { --bg: #0b0e14; --panel: #12151d; --border: #232838; --text: #e6e9f0; --muted: #8a92a6; --accent: #4c8dff; --err: #ff6b6b; color-scheme: dark; }
   @media (prefers-color-scheme: light) {
@@ -203,6 +205,7 @@ export function loginPage(o: { next: string; username?: string; error?: string }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   main { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 28px 24px; }
   h1 { font-size: 18px; margin: 0 0 4px; }
+  ${BRAND_CSS}
   p.sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
   label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
   input { width: 100%; padding: 10px 12px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
@@ -213,7 +216,7 @@ export function loginPage(o: { next: string; username?: string; error?: string }
 </head>
 <body>
 <main>
-  <h1>Runner Fleet</h1>
+  <h1>${brandTitle("Runner Fleet")}</h1>
   <p class="sub">Sign in to the dashboard.</p>
   ${o.error ? `<p class="err" role="alert">${esc(o.error)}</p>` : ""}
   <form method="post" action="/login">
