@@ -29,6 +29,11 @@ from each agent's own uncommitted `.env` via `LOCATION`.
   most recently pushed first, and the scan stops once every busy runner is
   matched or `POLL_MAX_GITHUB_CALLS` is spent; an unmatched busy runner is shown
   as "running a job (not identified yet)", never as "idle".
+- A runner is shown offline only after GitHub reports it offline on `OFFLINE_CONFIRM_POLLS` (3) polls
+  in a row, about 6-8 minutes; until then it keeps its previous status, busy flag and current job.
+  GitHub's runners API can report the whole fleet offline while it is running jobs (2026-11-24 from
+  03:02 UTC: windows of up to ~6 minutes, every 10-15 minutes, with host telemetry still arriving),
+  and each window used to turn every runner red. A runner never seen before takes GitHub's word at once.
 - Runners are grouped into a "pool" (one physical host) by stripping a
   trailing `-N` from the runner name — `ci-host-a-linux-3` groups
   under `ci-host-a-linux`.

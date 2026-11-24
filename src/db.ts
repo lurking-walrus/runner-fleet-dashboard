@@ -1,15 +1,21 @@
 import type { GhRunner, ResolvedJob } from "./types";
 import { derivePool, type CompletedSelfHostedJob } from "./github";
 
-export async function upsertRunner(db: D1Database, runner: GhRunner, scopeLabel: string, now: string) {
+export async function upsertRunner(
+  db: D1Database,
+  runner: GhRunner,
+  scopeLabel: string,
+  now: string,
+  offlineReports = 0,
+) {
   await db
     .prepare(
-      `INSERT INTO runners (name, scope, os, status, busy, version, labels_json, pool, first_seen, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO runners (name, scope, os, status, busy, version, labels_json, pool, first_seen, updated_at, offline_reports)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(name) DO UPDATE SET
          scope = excluded.scope, os = excluded.os, status = excluded.status,
          busy = excluded.busy, version = excluded.version, labels_json = excluded.labels_json,
-         pool = excluded.pool, updated_at = excluded.updated_at`,
+         pool = excluded.pool, updated_at = excluded.updated_at, offline_reports = excluded.offline_reports`,
     )
     .bind(
       runner.name,
@@ -24,6 +30,7 @@ export async function upsertRunner(db: D1Database, runner: GhRunner, scopeLabel:
       derivePool(runner.name),
       now,
       now,
+      offlineReports,
     )
     .run();
 }
