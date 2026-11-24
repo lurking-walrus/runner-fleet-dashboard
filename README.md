@@ -115,6 +115,15 @@ Rule on the public hostname adds it), so the bare Function URL answers 403.
 workflow, secrets, the public hostname) is not in this public repository; it lives in the org's
 private config repo.
 
+### Releases
+
+Merges to `main` are released by semantic-release (`.github/workflows/release.yml`) from the PR
+title, which squash-merging makes the commit message: `feat:` cuts a minor version, `fix:`/`perf:`
+a patch, `feat!:` or a `BREAKING CHANGE:` footer a major; `chore:`, `docs:`, `test:`, `ci:` release
+nothing. Each release is a `vX.Y.Z` tag on the merge commit plus a GitHub Release with the notes.
+The private config repo watches the latest release and opens the PR that pins our deployment to
+it, so a `feat:` or `fix:` merge is what reaches production; anything else waits for the next one.
+
 ### Public hostname
 
 A Function URL takes no custom domain, so a Cloudflare-proxied DNS record fronts it: a CNAME to the
