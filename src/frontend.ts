@@ -42,6 +42,9 @@ export const FRONTEND_HTML = `<!doctype html>
   .job-info { flex: 1; min-width: 200px; font-size: 12.5px; color: var(--muted); }
   .job-info a { color: var(--blue); text-decoration: none; }
   .job-info a:hover { text-decoration: underline; }
+  .last-job { font-size: 11.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .last-job a { color: inherit; }
+  .last-job.idle-slot { color: var(--amber); }
   .empty { color: var(--muted); font-size: 12.5px; }
   .feed { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
   .feed h2 { font-size: 14px; margin: 0 0 12px; }
@@ -124,7 +127,20 @@ function renderRunner(r) {
     <span class="pill">\${r.os}</span>
     <span class="pill \${r.busy ? "busy" : ""}">\${r.status}\${r.busy ? " · busy" : ""}</span>
     <span class="job-info">\${jobHtml}</span>
+    \${renderLastJob(r)}
   </div>\`;
+}
+
+// The slot's last finished job (from GitHub's completed runs, synced every 10 minutes) and how many
+// jobs it ran, so an unused slot stands out. Ephemeral runners get a new name per job; the slot is
+// the name without that suffix.
+function renderLastJob(r) {
+  const l = r.last_job;
+  if (!l) return '<span class="last-job idle-slot" title="slot ' + esc(r.slot) + '">no job in 7d</span>';
+  const ageS = (Date.now() - new Date(l.last_job_at).getTime()) / 1000;
+  const cls = ageS > 6 * 3600 ? "last-job idle-slot" : "last-job";
+  const title = "slot " + r.slot + " · last: " + l.workflow_name + " › " + l.job_name + " on " + l.repo + (l.conclusion ? " (" + l.conclusion + ")" : "");
+  return '<span class="' + cls + '" title="' + esc(title) + '">last job <a href="' + esc(l.run_url) + '" target="_blank" rel="noopener">' + fmtAge(l.last_job_at) + "</a> · " + l.jobs_24h + " in 24h · " + l.jobs_7d + " in 7d</span>";
 }
 
 function fmtDur(s) {

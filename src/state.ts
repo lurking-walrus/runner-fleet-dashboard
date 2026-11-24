@@ -1,7 +1,10 @@
 import { cached } from "./cache";
+import { deriveSlot } from "./github";
 import type { Env } from "./types";
 
 const METRICS_TTL_MS = 15 * 60_000;
+// job_history only changes on the 10-minute history sync, so a shorter TTL buys nothing.
+const SLOTS_TTL_MS = 5 * 60_000;
 
 export async function buildState(env: Env) {
   const [runners, jobs, telemetry, events, pollState, queue] = await Promise.all([
@@ -18,12 +21,19 @@ export async function buildState(env: Env) {
     (telemetry.results as Record<string, unknown>[]).map((t) => [t.host as string, t]),
   );
 
-  const enrichedRunners = (runners.results as Record<string, unknown>[]).map((r) => ({
-    ...r,
-    labels: JSON.parse(r.labels_json as string),
-    current_job: jobByRunner.get(r.name as string) ?? null,
-    telemetry: telemetryByHost.get(r.pool as string) ?? null,
-  }));
+  const slots = await cached(env.DB, "slot_usage", SLOTS_TTL_MS, Date.now(), () => buildSlotUsage(env.DB, Date.now()));
+
+  const enrichedRunners = (runners.results as Record<string, unknown>[]).map((r) => {
+    const slot = deriveSlot(r.name as string);
+    return {
+      ...r,
+      labels: JSON.parse(r.labels_json as string),
+      current_job: jobByRunner.get(r.name as string) ?? null,
+      telemetry: telemetryByHost.get(r.pool as string) ?? null,
+      slot,
+      last_job: slots[slot] ?? null,
+    };
+  });
 
   return {
     runners: enrichedRunners,
@@ -71,4 +81,46 @@ async function buildMetrics(env: Env) {
     byPool[r.pool as string] = { ...(byPool[r.pool as string] ?? {}), last_job_at: r.last_job_at };
   }
   return byPool;
+}
+
+export interface SlotUsage {
+  last_job_at: string;
+  repo: string;
+  workflow_name: string;
+  job_name: string;
+  run_url: string;
+  conclusion: string | null;
+  jobs_24h: number;
+  jobs_7d: number;
+}
+
+/**
+ * The last finished job and job counts per runner slot (deriveSlot), so the page can show whether
+ * work fans out across every slot of a pool. Ephemeral runners re-register with a new name per
+ * job, so this groups by slot, not by the registration the runners table holds.
+ */
+export async function buildSlotUsage(db: D1Database, now: number): Promise<Record<string, SlotUsage>> {
+  const day = new Date(now - 86_400_000).toISOString();
+  const week = new Date(now - 7 * 86_400_000).toISOString();
+  // SQLite returns the other bare columns from the row that holds MAX(finished_at).
+  const { results } = await db
+    .prepare(
+      `SELECT runner_name, MAX(finished_at) AS last_job_at, repo, workflow_name, job_name, run_url, conclusion,
+              COUNT(*) AS jobs_7d, SUM(finished_at >= ?1) AS jobs_24h
+       FROM job_history WHERE finished_at >= ?2 GROUP BY runner_name`,
+    )
+    .bind(day, week)
+    .all<SlotUsage & { runner_name: string }>();
+  const bySlot: Record<string, SlotUsage> = {};
+  for (const { runner_name, ...row } of results) {
+    const slot = deriveSlot(runner_name);
+    const prev = bySlot[slot];
+    if (!prev) {
+      bySlot[slot] = { ...row };
+      continue;
+    }
+    const latest = row.last_job_at > prev.last_job_at ? row : prev;
+    bySlot[slot] = { ...latest, jobs_24h: prev.jobs_24h + row.jobs_24h, jobs_7d: prev.jobs_7d + row.jobs_7d };
+  }
+  return bySlot;
 }
