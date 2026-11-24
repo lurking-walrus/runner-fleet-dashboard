@@ -1,27 +1,14 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "runner-fleet-dashboard",
+  // NO WORKER IS DEPLOYED (2026-11-23). The dashboard runs on AWS Lambda (src/aws/); the Cloudflare
+  // Worker and its D1 database were retired (issue #28). This file stays for two things only:
+  //   vars   the app's settings, copied into the Lambda package by scripts/build-lambda.mjs
+  //   types  `npm run types` (wrangler types) generates the runtime types the code is written against
+  // Do not add bindings or triggers back: nothing deploys this file.
   "main": "src/index.ts",
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "runner-fleet-dashboard",
-      "database_id": "3a28c2fd-2cdf-422f-8217-3877010e2888",
-      "migrations_dir": "./migrations"
-    }
-  ],
-  "triggers": {
-    // ONE trigger: the Workers Free plan allows 5 cron triggers per account and other Workers use
-    // the rest. */2 runs the runner poll, except on minutes divisible by 10, which run the
-    // finished-job history sync instead (src/index.ts HISTORY_SYNC_EVERY_MINUTES).
-    "crons": ["*/2 * * * *"]
-  },
   "vars": {
     // Comma-separated "org:<name>" / "repo:<owner>/<name>" scopes to poll for runners.
     // Personal-account self-hosted runners only exist per-repo, so list them explicitly.

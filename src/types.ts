@@ -29,7 +29,8 @@ export interface Secrets {
   TELEMETRY_MIN_WRITE_SECONDS?: string;
 }
 
-export type Env = Cloudflare.Env & Secrets;
+// DB is the D1 API over SQLite on S3 (src/aws/store.ts); wrangler.jsonc has no binding for it any more.
+export type Env = Cloudflare.Env & Secrets & { DB: D1Database };
 
 export interface GhRunner {
   id: number;
