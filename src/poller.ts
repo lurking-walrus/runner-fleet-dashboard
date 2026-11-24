@@ -24,6 +24,7 @@ import { summarizeQueue } from "./queue";
 import { pruneRollups, rollupPendingDay } from "./timing-report";
 import { alertIfPollerFailing, alertIfPollerRecovered } from "./alerts";
 import { resolveGithubToken } from "./github-auth";
+import { effectiveRunnerStatus, type PrevRunner } from "./runner-status";
 import type { Env, PollScope } from "./types";
 
 export async function runPoll(env: Env) {
@@ -38,18 +39,21 @@ export async function runPoll(env: Env) {
       for (const r of runners) allRunners.push({ ...r, scope });
     }
 
-    // Load previous status so we can log online/offline transitions.
-    const prevStatus = new Map<string, { status: string; version: string }>();
-    const { results: prevRows } = await env.DB.prepare(`SELECT name, status, version FROM runners`).all<{
-      name: string;
-      status: string;
-      version: string;
-    }>();
+    // Load previous status so we can log online/offline transitions and debounce offline reports.
+    const prevStatus = new Map<string, PrevRunner & { version: string }>();
+    const { results: prevRows } = await env.DB.prepare(
+      `SELECT name, status, busy, version, offline_reports FROM runners`,
+    ).all<PrevRunner & { name: string; version: string }>();
     for (const row of prevRows) prevStatus.set(row.name, row);
+    const confirmPolls = Number(env.OFFLINE_CONFIRM_POLLS) || 3;
 
-    for (const { runner, scopeLabel } of allRunners) {
-      await upsertRunner(env.DB, runner, scopeLabel, now);
-      const prev = prevStatus.get(runner.name);
+    for (const entry of allRunners) {
+      const { scopeLabel } = entry;
+      const prev = prevStatus.get(entry.runner.name);
+      const eff = effectiveRunnerStatus(entry.runner, prev, confirmPolls);
+      // Later steps (busy-job resolution) read entry.runner, so they see the debounced status too.
+      const runner = (entry.runner = { ...entry.runner, status: eff.status, busy: eff.busy });
+      await upsertRunner(env.DB, runner, scopeLabel, now, eff.offlineReports);
       if (prev && prev.status !== runner.status) {
         await logEvent(
           env.DB,

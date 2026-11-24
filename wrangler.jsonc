@@ -23,6 +23,11 @@
     // Re-raised every 6 hours while it stays broken.
     "POLLER_FAILURE_ALERT_RUNS": "3",
     "OFFLINE_STUCK_MINUTES": "15",
+    // Polls in a row GitHub must report a runner offline before the dashboard shows it offline.
+    // On 2026-11-24 GitHub's runners API reported the whole fleet offline in windows of up to ~6 min
+    // (two polls) while the runners were running jobs, so 3 (6-8 min); a real outage is still
+    // flagged well inside OFFLINE_STUCK_MINUTES.
+    "OFFLINE_CONFIRM_POLLS": "3",
     // Max completed workflow runs whose jobs the history sync fetches per 10-minute tick (one
     // GitHub call each). Keeps the sync inside the per-invocation subrequest limit; any backlog
     // carries over to the next tick.
