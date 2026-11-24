@@ -25,11 +25,11 @@ jobs:
       # Merging here (rather than `gh pr merge --auto`, which defers the actual
       # merge to GitHub's background auto-merge service) matters: a merge
       # performed with the default GITHUB_TOKEN never fires downstream `push`
-      # or `pull_request: closed` triggers, so deploy.yml's push-to-main
-      # trigger silently never ran for any squash-merged PR (see #7's fix
+      # or `pull_request: closed` triggers, so a push-to-main
+      # trigger (then deploy.yml, now release.yml) silently never ran for any squash-merged PR (see #7's fix
       # sitting merged-but-undeployed for a day). workflow_dispatch is the one
       # event GITHUB_TOKEN is still allowed to trigger, so merging inline and
-      # dispatching deploy.yml ourselves closes that gap without needing a PAT.
+      # dispatching release.yml ourselves closes that gap without needing a PAT.
       #
       # Deliberately not `gh pr checks --watch`: that waits for every check run
       # on the commit, including this very job's own "enable-auto-merge" check,
@@ -56,16 +56,19 @@ jobs:
           if [ "$merged" = true ]; then
             echo "merged=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Direct merge did not go through after waiting on checks (see log for the last error). Falling back to background auto-merge -- deploy.yml will need a manual (workflow_dispatch) trigger once this actually merges, since that merge will be GITHUB_TOKEN-attributed and won't self-trigger deploy." >&2
+            echo "::warning::Direct merge did not go through after waiting on checks (see log for the last error). Falling back to background auto-merge -- release.yml will need a manual (workflow_dispatch) trigger once this actually merges, since that merge will be GITHUB_TOKEN-attributed and won't self-trigger a release." >&2
             gh pr merge --auto --squash "$PR_URL"
             echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy the merge
+      # deploy.yml went with the Cloudflare Worker (#36). What a merge starts now is release.yml:
+      # it cuts a version if the merged title is a feat/fix, and .github-private picks the release
+      # up and opens the deploy bump.
+      - name: Release the merge
         if: steps.merge.outputs.merged == 'true' && github.event.pull_request.base.ref == 'main'
         env:
           GH_TOKEN: ${{ github.token }}
         # No checkout in this job, so `gh` has no local git remote to infer the
         # repo from -- explicit --repo is required or this fails with "fatal:
         # not a git repository" (as PR #8's own merge run just demonstrated).
-        run: gh workflow run deploy.yml --repo "${{ github.repository }}" --ref main
+        run: gh workflow run release.yml --repo "${{ github.repository }}" --ref main
