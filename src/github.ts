@@ -53,7 +53,16 @@ export function parseScopes(raw: string): PollScope[] {
  * "mac-linux-arm64-1-1791294671"; strip that first so they group as "mac-linux-arm64".
  */
 export function derivePool(name: string): string {
-  return name.replace(/-\d{9,}$/, "").replace(/-\d+$/, "");
+  return deriveSlot(name).replace(/-\d+$/, "");
+}
+
+/**
+ * Runner name minus only the ephemeral registration timestamp: the slot a runner fills, which
+ * outlives every registration of it ("wsl-ephemeral-3-1795490600" -> "wsl-ephemeral-3"). A
+ * long-lived runner is its own slot ("win-desktop-1795470145" -> "win-desktop").
+ */
+export function deriveSlot(name: string): string {
+  return name.replace(/-\d{9,}$/, "");
 }
 
 export async function listRunnersForScope(

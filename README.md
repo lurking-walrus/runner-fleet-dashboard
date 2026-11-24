@@ -184,4 +184,8 @@ keeps page views cheap. Anything new that scans more than a few hundred rows goe
   the same box are both busy, they share the same CPU/RAM/disk numbers,
   because they're literally sharing the same hardware.
 - Charts are only on `/timing` (small SVG trends). Each pool on the status page shows 24h/7d usage (jobs run, busy time, failures, last job, avg/peak CPU), built from `job_history` (synced from GitHub's completed runs, 24h lookback, so the 7d figures fill in over the first week) and `telemetry_samples` (one per host per ~5 min, kept 7 days).
+- Each runner row shows its slot's last finished job (linked), and jobs in 24h and 7d, so a slot
+  that never gets work stands out (amber after 6 h idle or with no job in 7 days). A slot is the runner
+  name without the ephemeral timestamp (`wsl-ephemeral-3`), since each JIT registration gets a new
+  name. It comes from `job_history`, so it lags by up to the 10-minute sync plus a 5-minute cache.
 - Ephemeral/JIT runners (`<prefix>-<slot>-<unix-ts>`) group by stripping the timestamp, then the slot, so the agent's `HOST_ID` is the bare prefix (e.g. `mac-linux-arm64`).
